@@ -95,21 +95,18 @@ directly anywhere a package is expected (e.g. `programs.niri.package`).
 
 ### install.sh (non-Nix)
 
-Clone the repo and run the install script:
+Clone the official repo and this one and run the install script:
 
 ```bash
+git clone https://github.com/niri-wm/niri
 git clone https://github.com/zaroutt/Niri-glass
 cd Niri-glass
 ```
 
 ```bash
-./install.sh /path/to/niri/src
+./install.sh 
 ```
-
-> [!WARNING]
-> To apply this you must change your actual binary for the one with the changes. To do this you must be in your login manager and open the TTY and the script will replace it
-
-If no path is provided, defaults to `~/niri`. The script copies all modified files, recompiles niri, and installs the binary.
+This will create a new wayland session. You will be able to choose in your login manager.
 
 ### Manual steps
 
@@ -180,6 +177,21 @@ With all parameters set to 0 (except saturation, which is set to 1):
 
 <img width="531" height="329" alt="Screenshot from 2026-06-30 16-17-54" src="https://github.com/user-attachments/assets/c4ba4a55-a3cd-49b5-ae15-fdf9154650c4" />
 
-## Warnings
+## More examples
 
+### Interaction with live wallpaper with shadows enabled
+
+https://github.com/user-attachments/assets/4fceeaaf-4ff1-4c4d-adcf-af52cd33a912
+
+### With xray set to false
+
+<img width="1920" height="1080" alt="Screenshot from 2026-07-22 20-58-17" src="https://github.com/user-attachments/assets/049102f2-d7c9-4d0b-8862-671c34c61d18" />
+
+
+
+
+## Warnings
+- Tested in the 26.04 version
+- newer versions may conflict with this.
 - Vibe coded project so expect weirdly behavior.
+  
