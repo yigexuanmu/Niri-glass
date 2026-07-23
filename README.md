@@ -118,7 +118,7 @@ This will create a new wayland session. You will be able to choose in your login
 
 ### Example with all parameters
 
-- for the effect work well the xray must be true. if not, the borders will have artifacts
+
 
 In `config.kdl`:
 
