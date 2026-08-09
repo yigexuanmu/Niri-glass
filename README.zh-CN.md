@@ -22,6 +22,20 @@
 
 <img width="1920" height="1080" alt="截图 2026-06-30 12-40-40" src="https://github.com/user-attachments/assets/eaeda5ef-1fe3-4e51-8466-10e461240021" />
 
+## SHORiN-KiWATA 分支功能
+
+来自 [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWATA/niri) 分支的额外功能:
+
+1. Grid overview(方格状窗口预览)
+
+   <img width="1920" height="1200" alt="方格状窗口预览" src="screenshots/grid-overview.png" />
+
+1. Magnifier(晃动鼠标指针放大)
+
+   <img width="1920" height="1200" alt="放大镜" src="screenshots/magnifier.png" />
+
+   <img width="1518" height="968" alt="放大镜特写" src="screenshots/magnifier-2.png" />
+
 ## 文件
 
 ### 着色器(Shader)
@@ -45,24 +59,45 @@
 
 ### Nix / NixOS(flake)
 
-本仓库自带 flake,基于匹配的上游 niri 版本(pin 在 rev `49fc611`,niri 26.04)打上液态玻璃补丁。无需手动复制文件或跑 `install.sh`。
+本仓库自带 flake,在 [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWATA/niri)
+分支的基础上打上液态玻璃补丁,打包方式与
+[shorin-niri-nix](https://github.com/yigexuanmu/shorin-niri-nix) 一致。
+无需手动复制文件或跑 `install.sh`。
 
-快速试用(不安装):
-
-```bash
-nix run github:zaroutt/Niri-glass          # 跑合成器
-nix shell github:zaroutt/Niri-glass        # 把 niri-glass 加进 shell
-nix develop github:zaroutt/Niri-glass      # 开发 shell(rust + niri 编译依赖)
-nix build  github:zaroutt/Niri-glass       # 编译,产物在 ./result
-```
-
-NixOS(flake),复用上游 niri 的 session / portal / polkit 接线:
+#### 1. 在 flake.nix 中引入
 
 ```nix
 {
-  inputs.niri-glass.url = "github:zaroutt/Niri-glass";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # `git+https` 绕过 GitHub REST API(未认证有速率限制)。
+    # 也可用 `github:yigexuanmu/Niri-glass`。
+    niri-glass.url = "git+https://github.com/yigexuanmu/Niri-glass?ref=main";
+  };
 
-  # in your nixosConfiguration modules:
+  outputs = { self, nixpkgs, niri-glass, ... } @ inputs: {
+    # ...
+  };
+}
+```
+
+#### 2. 安装到系统
+
+通过 `programs.niri` 用 niri-glass 替换原版 niri:
+
+```nix
+programs.niri = {
+  enable = true;
+  package = inputs.niri-glass.packages.x86_64-linux.default;
+};
+```
+
+然后 `sudo nixos-rebuild switch`。
+
+或者使用仓库自带的 NixOS 模块,复用 niri 的 session / portal / polkit 接线:
+
+```nix
+{
   imports = [ inputs.niri-glass.nixosModules.default ];
   programs.niri-glass.enable = true;
 }
@@ -85,15 +120,25 @@ home-manager:
 或者直接在任何接收包的地方引用 `inputs.niri-glass.packages.<system>.niri-glass`
 (比如 `programs.niri.package`)。
 
-> flake pin 在这些补丁文件所针对的精确 niri 提交。如果你 bump 了 `niri` 输入,
-> 同步刷新补丁文件,否则可能编译失败。
+快速试用(不安装):
+
+```bash
+nix run github:yigexuanmu/Niri-glass          # 跑合成器
+nix shell github:yigexuanmu/Niri-glass        # 把 niri-glass 加进 shell
+nix develop github:yigexuanmu/Niri-glass      # 开发 shell(rust + niri 编译依赖)
+nix build  github:yigexuanmu/Niri-glass       # 编译,产物在 ./result
+```
+
+> flake pin 在这些补丁文件所针对的精确 SHORiN-KiWATA/niri 提交。如果你 bump 了
+> `shorin-niri` 输入,同步刷新补丁文件(`src/render_helpers/*`、
+> `niri-config/src/appearance.rs`),否则可能编译失败。
 
 ### install.sh(非 Nix 方式)
 
 克隆仓库并跑安装脚本:
 
 ```bash
-git clone https://github.com/zaroutt/Niri-glass
+git clone https://github.com/yigexuanmu/Niri-glass
 cd Niri-glass
 ```
 
