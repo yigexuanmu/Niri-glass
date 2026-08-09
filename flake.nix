@@ -58,6 +58,8 @@
             patchShebangs resources/niri-session
             substituteInPlace resources/niri.service \
               --replace-fail 'ExecStart=niri' "ExecStart=$out/bin/niri"
+            echo "==> Applying Niri-glass grid-overview config patch"
+            patch -p1 < ${./patches/grid-overview-config.patch}
           ''
           + ''
             echo "==> Applying Niri-glass liquid-glass overlay"

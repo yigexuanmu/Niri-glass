@@ -1,0 +1,224 @@
+diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
+index 4a2f2c5..339173f 100644
+--- a/niri-config/src/lib.rs
++++ b/niri-config/src/lib.rs
+@@ -1904,7 +1904,6 @@ mod tests {
+                 min_scale: 0.08,
+                 focused_column_scale: 1.04,
+                 grid_all_monitors: true,
+-                default_mod_action: true,
+             },
+             magnifier: Magnifier {
+                 off: false,
+diff --git a/niri-config/src/misc.rs b/niri-config/src/misc.rs
+index bffe2fa..454b795 100644
+--- a/niri-config/src/misc.rs
++++ b/niri-config/src/misc.rs
+@@ -266,7 +266,6 @@ pub struct GridOverview {
+     pub min_scale: f64,
+     pub focused_column_scale: f64,
+     pub grid_all_monitors: bool,
+-    pub default_mod_action: bool,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq)]
+@@ -302,7 +301,6 @@ impl Default for GridOverview {
+             min_scale: 0.08,
+             focused_column_scale: 1.04,
+             grid_all_monitors: true,
+-            default_mod_action: true,
+         }
+     }
+ }
+@@ -438,8 +436,6 @@ pub struct GridOverviewPart {
+     pub focused_column_scale: Option<FloatOrInt<1, 2>>,
+     #[knuffel(child, unwrap(argument))]
+     pub grid_all_monitors: Option<bool>,
+-    #[knuffel(child, unwrap(argument))]
+-    pub default_mod_action: Option<bool>,
+ }
+ 
+ impl MergeWith<GridOverviewPart> for GridOverview {
+@@ -459,9 +455,6 @@ impl MergeWith<GridOverviewPart> for GridOverview {
+         if let Some(grid_all_monitors) = part.grid_all_monitors {
+             self.grid_all_monitors = grid_all_monitors;
+         }
+-        if let Some(default_mod_action) = part.default_mod_action {
+-            self.default_mod_action = default_mod_action;
+-        }
+     }
+ }
+ 
+diff --git a/resources/default-config.kdl b/resources/default-config.kdl
+index be7466b..c66d999 100644
+--- a/resources/default-config.kdl
++++ b/resources/default-config.kdl
+@@ -368,11 +368,6 @@ grid-overview {
+ 
+     // Scale the focused column relative to its cell. Ranges from 1 to 2.
+     focused-column-scale 1.04
+-
+-    // When true (the default), tapping the Mod key alone (press and release without
+-    // pressing any other key) toggles the grid overview, even without an explicit binding.
+-    // Set to false to disable this built-in behavior.
+-    // default-mod-action false
+ }
+ 
+ // Fullscreen magnifier settings.
+@@ -498,6 +493,7 @@ binds {
+ 
+     // Tap Mod (press and release without pressing any other key in between)
+     // to toggle the grid overview: a view of all windows on the current workspaces.
++    // Like the magnifier, this only works when the binding is present in this section.
+     Mod repeat=false { toggle-grid-overview; }
+ 
+     // Toggle the fullscreen magnifier on or off.
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index ae59cf8..ff14bd3 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -159,7 +159,6 @@ impl State {
+ 
+         if should_cancel_pending_modifier_bind(&event) {
+             self.niri.pending_modifier_bind = None;
+-            self.niri.pending_default_mod_tap = None;
+         }
+ 
+         let mut consumed_by_a11y = false;
+@@ -476,13 +475,6 @@ impl State {
+                         &mut this.niri.pending_modifier_bind,
+                         key_code,
+                     );
+-                    if this
+-                        .niri
+-                        .pending_default_mod_tap
+-                        .is_some_and(|pending| pending != key_code)
+-                    {
+-                        this.niri.pending_default_mod_tap = None;
+-                    }
+                 }
+ 
+                 // After updating XKB state from accessibility-grabbed keys, return right away and
+@@ -540,17 +532,6 @@ impl State {
+                             &this.niri.screenshot_ui,
+                             is_inhibiting_shortcuts,
+                         );
+-
+-                        // If no config bind was found for this modifier tap, and this is the
+-                        // mod key, track it as a potential default mod tap (for grid-overview).
+-                        if this.niri.pending_modifier_bind.is_none()
+-                            && modifier_from_keysym(raw) == Some(mod_key.to_modifiers())
+-                            && config.grid_overview.default_mod_action
+-                            && !this.niri.screenshot_ui.is_open()
+-                            && !is_inhibiting_shortcuts
+-                        {
+-                            this.niri.pending_default_mod_tap = Some(key_code);
+-                        }
+                     } else if !pressed
+                         && this
+                             .niri
+@@ -564,13 +545,6 @@ impl State {
+                             key_code,
+                             is_inhibiting_shortcuts,
+                         );
+-                    } else if let Some(filter) = finish_pending_default_mod_tap(
+-                        &mut this.niri.pending_default_mod_tap,
+-                        key_code,
+-                        pressed,
+-                    ) {
+-                        this.do_action(Action::ToggleGridOverview, false);
+-                        return filter;
+                     }
+                 }
+ 
+@@ -5081,21 +5055,6 @@ fn finish_pending_modifier_bind(
+     *completed_modifier_bind = Some(pending.bind);
+ }
+ 
+-fn finish_pending_default_mod_tap(
+-    pending_default_mod_tap: &mut Option<Keycode>,
+-    key_code: Keycode,
+-    pressed: bool,
+-) -> Option<FilterResult<Option<Bind>>> {
+-    if pressed || pending_default_mod_tap.as_ref() != Some(&key_code) {
+-        return None;
+-    }
+-
+-    *pending_default_mod_tap = None;
+-
+-    // The modifier press was forwarded, so its matching release must be forwarded too.
+-    Some(FilterResult::Forward)
+-}
+-
+ fn cancel_pending_modifier_bind_for_key(
+     pending_modifier_bind: &mut Option<PendingModifierBind>,
+     key_code: Keycode,
+@@ -6389,40 +6348,6 @@ mod tests {
+         assert_eq!(completed_modifier_bind, Some(bind));
+     }
+ 
+-    #[test]
+-    fn default_mod_tap_press_and_release_are_forwarded() {
+-        let screenshot_ui = ScreenshotUi::new(Clock::default(), Default::default());
+-        let key_code = Keycode::from(Keysym::Super_L.raw() + 8);
+-        let mods = ModifiersState {
+-            logo: true,
+-            ..Default::default()
+-        };
+-        let mut suppressed_keys = HashSet::new();
+-
+-        let press = should_intercept_key(
+-            &mut suppressed_keys,
+-            std::iter::empty::<&Bind>(),
+-            ModKey::Super,
+-            key_code,
+-            Keysym::Super_L,
+-            Some(Keysym::Super_L),
+-            true,
+-            mods,
+-            &screenshot_ui,
+-            false,
+-            false,
+-        );
+-        assert!(matches!(press, FilterResult::Forward));
+-        assert!(suppressed_keys.is_empty());
+-
+-        let mut pending_default_mod_tap = Some(key_code);
+-        let release = finish_pending_default_mod_tap(&mut pending_default_mod_tap, key_code, false)
+-            .expect("matching default Mod tap release should complete");
+-        assert!(matches!(release, FilterResult::Forward));
+-        assert!(pending_default_mod_tap.is_none());
+-        assert!(suppressed_keys.is_empty());
+-    }
+-
+     #[test]
+     fn comp_mod_handling() {
+         let bindings = Binds(vec![
+diff --git a/src/niri.rs b/src/niri.rs
+index 953a702..4081aae 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -408,7 +408,6 @@ pub struct Niri {
+     pub mods_with_finger_scroll_binds: HashSet<Modifiers>,
+     pub pending_modifier_bind: Option<PendingModifierBind>,
+     pub completed_modifier_bind: Option<Bind>,
+-    pub pending_default_mod_tap: Option<Keycode>,
+ 
+     pub lock_state: LockState,
+ 
+@@ -1621,7 +1620,6 @@ impl State {
+                 mods_with_finger_scroll_binds(new_mod_key, &config.binds);
+             self.niri.pending_modifier_bind = None;
+             self.niri.completed_modifier_bind = None;
+-            self.niri.pending_default_mod_tap = None;
+         }
+ 
+         if config.window_rules != old_config.window_rules {
+@@ -3208,7 +3206,6 @@ impl Niri {
+             mods_with_finger_scroll_binds,
+             pending_modifier_bind: None,
+             completed_modifier_bind: None,
+-            pending_default_mod_tap: None,
+ 
+             lock_state: LockState::Unlocked,
+             locked_hint: None,

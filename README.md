@@ -32,6 +32,8 @@ Additional features from the [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWA
 
    <img width="1920" height="1200" alt="Grid overview window preview" src="screenshots/grid-overview.png" />
 
+   The Mod-tap trigger is no longer built in: it works through the regular `Mod repeat=false { toggle-grid-overview; }` binding in `binds`, just like the magnifier below, so you can rebind or remove it freely.
+
 1. Magnifier（晃动鼠标指针放大）
 
    <img width="1920" height="1200" alt="Magnifier" src="screenshots/magnifier.png" />

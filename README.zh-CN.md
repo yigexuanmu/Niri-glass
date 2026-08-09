@@ -30,6 +30,8 @@
 
    <img width="1920" height="1200" alt="方格状窗口预览" src="screenshots/grid-overview.png" />
 
+   Mod 键轻点不再是内置行为:它通过 `binds` 里普通的 `Mod repeat=false { toggle-grid-overview; }` 绑定触发(和下面的放大镜一样),可以自由改绑或删除。
+
 1. Magnifier(晃动鼠标指针放大)
 
    <img width="1920" height="1200" alt="放大镜" src="screenshots/magnifier.png" />
