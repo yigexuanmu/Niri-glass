@@ -24,6 +24,18 @@
 
 <img width="1920" height="1080" alt="Screenshot from 2026-06-30 12-40-02" src="https://github.com/user-attachments/assets/eaeda5ef-1fe3-4e51-8466-10e461240021" />
 
+## SHORiN-KiWATA fork features
+
+Additional features from the [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWATA/niri) fork:
+
+1. Grid overview（方格状窗口预览）
+
+   <img width="1920" height="1200" alt="Grid overview window preview" src="screenshots/grid-overview.png" />
+
+1. Magnifier（晃动鼠标指针放大）
+
+   <img width="1920" height="1200" alt="Magnifier" src="screenshots/magnifier.png" />
+
 ## Files
 
 ### Shader
@@ -48,25 +60,45 @@
 ### Nix / NixOS (flake)
 
 This repo ships a flake that builds niri with the liquid-glass overlay applied
-on top of the matching upstream niri release (pinned to rev `49fc611`, niri
-26.04). No manual file copying or `install.sh` needed.
+on top of the [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWATA/niri) fork,
+packaged the same way as [shorin-niri-nix](https://github.com/yigexuanmu/shorin-niri-nix).
+No manual file copying or `install.sh` needed.
 
-Quick try-out (no install):
-
-```bash
-nix run github:zaroutt/Niri-glass          # run the compositor
-nix shell github:zaroutt/Niri-glass        # drop niri-glass into a shell
-nix develop github:zaroutt/Niri-glass      # dev shell (rust + niri build deps)
-nix build  github:zaroutt/Niri-glass       # build, result at ./result
-```
-
-NixOS (flake), reusing the upstream niri session/portal/polkit wiring:
+#### 1. Add the input to your flake
 
 ```nix
 {
-  inputs.niri-glass.url = "github:zaroutt/Niri-glass";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # `git+https` bypasses the GitHub REST API (unauthenticated rate limit).
+    # Use `github:yigexuanmu/Niri-glass` if you prefer.
+    niri-glass.url = "git+https://github.com/yigexuanmu/Niri-glass?ref=main";
+  };
 
-  # in your nixosConfiguration modules:
+  outputs = { self, nixpkgs, niri-glass, ... } @ inputs: {
+    # ...
+  };
+}
+```
+
+#### 2. Install on your system
+
+Replace the stock niri with niri-glass through `programs.niri`:
+
+```nix
+programs.niri = {
+  enable = true;
+  package = inputs.niri-glass.packages.x86_64-linux.default;
+};
+```
+
+Then `sudo nixos-rebuild switch`.
+
+Alternatively, use the bundled NixOS module, which reuses the niri
+session/portal/polkit wiring:
+
+```nix
+{
   imports = [ inputs.niri-glass.nixosModules.default ];
   programs.niri-glass.enable = true;
 }
@@ -85,13 +117,22 @@ home-manager:
 }
 ```
 
-Or just add the package via the overlay (`overlays.default` exposes
-`pkgs.niri-glass`) or reference `inputs.niri-glass.packages.<system>.niri-glass`
-directly anywhere a package is expected (e.g. `programs.niri.package`).
+Or use the overlay (`overlays.default` exposes `pkgs.niri-glass`), or reference
+`inputs.niri-glass.packages.<system>.niri-glass` anywhere a package is expected.
 
-> The flake is pinned to the exact niri revision these overlay files were
-> written against. If you bump the `niri` input, refresh the overlay files to
-> match or the build may fail to compile.
+Quick try-out (no install):
+
+```bash
+nix run github:yigexuanmu/Niri-glass          # run the compositor
+nix shell github:yigexuanmu/Niri-glass        # drop niri-glass into a shell
+nix develop github:yigexuanmu/Niri-glass      # dev shell (rust + niri build deps)
+nix build  github:yigexuanmu/Niri-glass       # build, result at ./result
+```
+
+> The flake is pinned to a specific SHORiN-KiWATA/niri revision the overlay files
+> were written against. If you bump the `shorin-niri` input, refresh the overlay
+> files (`src/render_helpers/*`, `niri-config/src/appearance.rs`) to match or the
+> build may fail to compile.
 
 ### install.sh (non-Nix)
 
@@ -99,7 +140,7 @@ Clone the official repo and this one and run the install script:
 
 ```bash
 git clone https://github.com/niri-wm/niri
-git clone https://github.com/zaroutt/Niri-glass
+git clone https://github.com/yigexuanmu/Niri-glass
 cd Niri-glass
 ```
 
