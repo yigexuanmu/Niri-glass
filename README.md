@@ -36,6 +36,8 @@ Additional features from the [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWA
 
    <img width="1920" height="1200" alt="Magnifier" src="screenshots/magnifier.png" />
 
+   <img width="1518" height="968" alt="Magnifier closeup" src="screenshots/magnifier-2.png" />
+
 ## Files
 
 ### Shader
