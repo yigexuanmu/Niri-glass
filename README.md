@@ -74,9 +74,7 @@ No manual file copying or `install.sh` needed.
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # `git+https` bypasses the GitHub REST API (unauthenticated rate limit).
-    # Use `github:yigexuanmu/Niri-glass` if you prefer.
-    niri-glass.url = "git+https://github.com/yigexuanmu/Niri-glass?ref=main";
+    niri-glass.url = "github:yigexuanmu/Niri-glass";
   };
 
   outputs = { self, nixpkgs, niri-glass, ... } @ inputs: {
