@@ -6,19 +6,19 @@
 
   <img width="1920" height="1080" alt="截图 2026-07-02 00-06-33" src="https://github.com/user-attachments/assets/a10b40c7-b147-4dfa-8208-28ebb4003cfc" />
 
-1.
+2.
 
 <img width="1920" height="1080" alt="截图 2026-06-30 12-31-50" src="https://github.com/user-attachments/assets/8cad6485-b685-4bc9-b22e-8cf7801cd15a" />
 
-1.
+3.
 
 <img width="1920" height="1080" alt="截图 2026-06-30 12-32-48" src="https://github.com/user-attachments/assets/fccc46f0-9cda-488b-b0e1-5939d36676cf" />
 
-1.
+4.
 
 <img width="1920" height="1080" alt="截图 2026-06-30 12-34-48" src="https://github.com/user-attachments/assets/ff3f0d17-3bf1-42e8-9660-e291189321f9" />
 
-1.
+5.
 
 <img width="1920" height="1080" alt="截图 2026-06-30 12-40-40" src="https://github.com/user-attachments/assets/eaeda5ef-1fe3-4e51-8466-10e461240021" />
 
@@ -26,15 +26,17 @@
 
 来自 [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWATA/niri) 分支的额外功能:
 
-1. Grid overview(方格状窗口预览)
+1. 方格状窗口预览
 
    <img width="1920" height="1200" alt="方格状窗口预览" src="screenshots/grid-overview.png" />
 
    Mod 键轻点不再是内置行为:它通过 `binds` 里普通的 `Mod repeat=false { toggle-grid-overview; }` 绑定触发(和下面的放大镜一样),可以自由改绑或删除。
 
-1. Magnifier(晃动鼠标指针放大)
+2. 晃动鼠标指针放大
 
    <img width="1920" height="1200" alt="放大镜" src="screenshots/magnifier.png" />
+
+3. 放大镜
 
    <img width="1518" height="968" alt="放大镜特写" src="screenshots/magnifier-2.png" />
 
