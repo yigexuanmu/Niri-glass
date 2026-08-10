@@ -72,9 +72,7 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # `git+https` 绕过 GitHub REST API(未认证有速率限制)。
-    # 也可用 `github:yigexuanmu/Niri-glass`。
-    niri-glass.url = "git+https://github.com/yigexuanmu/Niri-glass?ref=main";
+    niri-glass.url = "github:yigexuanmu/Niri-glass";
   };
 
   outputs = { self, nixpkgs, niri-glass, ... } @ inputs: {
