@@ -28,15 +28,17 @@
 
 Additional features from the [SHORiN-KiWATA/niri](https://github.com/SHORiN-KiWATA/niri) fork:
 
-1. Grid overview（方格状窗口预览）
+1. Grid overview
 
    <img width="1920" height="1200" alt="Grid overview window preview" src="screenshots/grid-overview.png" />
 
    The Mod-tap trigger is no longer built in: it works through the regular `Mod repeat=false { toggle-grid-overview; }` binding in `binds`, just like the magnifier below, so you can rebind or remove it freely.
 
-1. Magnifier（晃动鼠标指针放大）
+2. Shake mouse pointer to zoom
 
    <img width="1920" height="1200" alt="Magnifier" src="screenshots/magnifier.png" />
+
+3. Magnifier
 
    <img width="1518" height="968" alt="Magnifier closeup" src="screenshots/magnifier-2.png" />
 
