@@ -4916,15 +4916,43 @@ impl Niri {
         }
 
         // Cursor effects: draw particle primitives (waves/sparks/trail) above the cursor.
+        // T6: apply environment filtering — hide in fullscreen videos / hide on bare desktop.
         let output_loc = output.current_location().to_f64();
         let aa = 1.5; // anti-alias radius in physical px
-        for elem in crate::cursor_effect::render::collect_render_elements(
-            &self.cursor_effect,
-            output_loc,
-            output_scale.x as f32,
-            aa,
-        ) {
-            push(elem.into());
+        let ce_enabled = self.cursor_effect.enabled;
+        let (hide_in_fullscreen, show_on_desktop) = {
+            let ce = &self.config.borrow().cursor_effect;
+            (ce.hide_in_fullscreen, ce.show_on_desktop)
+        };
+        let global_pos = self
+            .tablet_cursor_location
+            .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
+        let focused_mapped = self.window_under(global_pos);
+        let mut should_render = false;
+        if ce_enabled {
+            should_render = true;
+            // Hide particle effect entirely while a fullscreen window has the pointer.
+            if hide_in_fullscreen {
+                if let Some(mapped) = focused_mapped {
+                    if mapped.sizing_mode().is_fullscreen() {
+                        should_render = false;
+                    }
+                } else if !show_on_desktop {
+                    should_render = false;
+                }
+            } else if focused_mapped.is_none() && !show_on_desktop {
+                should_render = false;
+            }
+        }
+        if should_render {
+            for elem in crate::cursor_effect::render::collect_render_elements(
+                &self.cursor_effect,
+                output_loc,
+                output_scale.x as f32,
+                aa,
+            ) {
+                push(elem.into());
+            }
         }
     }
 
