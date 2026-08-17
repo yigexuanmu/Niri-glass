@@ -1,11 +1,19 @@
-//! 光标特效 GLES 渲染层（Cursor Effects Rendering）。
+//! 光标特效 GLES 渲染层（Cursor Effects Rendering）。1:1 从 BASpark `index.html`
+//! 的 `_updateWaves` / `_updateSparks` / `_updateTrail` 源码翻译到 GLES SDF。
 //!
-//! 以 `BorderRenderElement` 为模板，包装 `ShaderRenderElement` + `ProgramType::CursorEffect`，
-//! 把 `CursorEffectState` 里的粒子几何用矢量 + SDF 画出来。每基元一个 element，
-//! 顶点 shader（`texture.vert`）已提供 `niri_v_coords`/`niri_size` 等自动 uniform。
+//! 复用仓库既有的 `ShaderRenderElement`（与 `BorderRenderElement` 同模板），把
+//! `CursorEffectState` 中 waves/rings/sparks/trail 的几何按 BASpark 的绘制顺序
+//! 逐一翻译为 SDF primitive（实心圆 / 圆弧描边 / 三角形 / 胶囊线段）。
+//!
+//! 坐标空间：quad 用 `niri_v_coords`（归一化 `[k, k+1]`），shader 通过 `input_to_geo`
+//! 矩阵（= `Mat3::from_scale(area_size)`，等价 `border.rs` 的 `geo_loc=0` 情形）转到
+//! 几何像素空间（Canvas 风格左上原点）。所有 `u_center`/`u_p*` 都用这个空间。
+//! 没有 `input_to_geo`，SDF 会全部命中，整个 quad 亮成方块（即原本的 bug 1）。
 
 use std::collections::HashMap;
 use std::rc::Rc;
+
+use glam::{Mat3, Vec2};
 
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, Uniform};
@@ -17,10 +25,11 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, T
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::render_helpers::renderer::{AsGlesFrame as _, NiriRenderer};
 use crate::render_helpers::shader_element::ShaderRenderElement;
-use crate::render_helpers::shaders::{ProgramType, Shaders};
+use crate::render_helpers::shaders::{mat3_uniform, ProgramType, Shaders};
 
-use crate::cursor_effect::state::CursorEffectState;
+use crate::cursor_effect::state::{self, CursorEffectState};
 
+/// 一个光标特效粒子基元的渲染参数。
 #[derive(Debug, Clone, Copy)]
 struct Params {
     mode: f32,
@@ -29,24 +38,37 @@ struct Params {
     radius: f32,
     inner_w: f32,
     aa: f32,
+    a0: f32,
+    a1: f32,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    p2: [f32; 2],
     trail_a0: f32,
     trail_a1: f32,
     alpha: f32,
 }
 
-/// 光标特效里一个粒子基元的渲染元素。
+/// 光标特效里一个粒子基元的渲染元素（与 `BorderRenderElement` 同模板）。
 #[derive(Debug, Clone)]
 pub struct CursorEffectElement {
     inner: ShaderRenderElement,
 }
 
 impl CursorEffectElement {
+    /// BASpark `index.html:390` `_strokeRingSegment` 包装：圆弧描边（圆角 cap）。
+    /// `radius_px` / `inner_w` / `alpha` / `color` bytes proportion。
     fn build(
         size: Size<f64, Logical>,
         loc: Point<f64, Logical>,
         params: Params,
         scale: f32,
     ) -> Self {
+        let area = Vec2::new(size.w as f32, size.h as f32);
+        // 几何充满整个 quad，`geo_loc=0`，所以 `input_to_geo = Scale(area)`，
+        // `coords_geo = niri_v_coords * area`。
+        let input_to_geo = Mat3::from_scale(area);
+        let geo_size = area;
+
         let mut inner = ShaderRenderElement::empty(ProgramType::CursorEffect, Kind::Unspecified);
         inner.update(
             size,
@@ -54,12 +76,19 @@ impl CursorEffectElement {
             scale,
             params.alpha,
             Rc::new([
+                mat3_uniform("input_to_geo", input_to_geo),
+                Uniform::new("geo_size", geo_size.to_array()),
                 Uniform::new("u_mode", params.mode),
                 Uniform::new("u_color", params.color),
                 Uniform::new("u_center", params.center),
                 Uniform::new("u_radius", params.radius),
                 Uniform::new("u_inner_w", params.inner_w),
                 Uniform::new("u_aa", params.aa),
+                Uniform::new("u_a0", params.a0),
+                Uniform::new("u_a1", params.a1),
+                Uniform::new("u_p0", params.p0),
+                Uniform::new("u_p1", params.p1),
+                Uniform::new("u_p2", params.p2),
                 Uniform::new("u_trail_a0", params.trail_a0),
                 Uniform::new("u_trail_a1", params.trail_a1),
             ]),
@@ -69,11 +98,12 @@ impl CursorEffectElement {
         Self { inner }
     }
 
+    /// 把全局逻辑坐标减去 output 左上 → 输出局部坐标。
     fn local(center_global: Point<f64, Logical>, output_loc: Point<f64, Logical>) -> (f64, f64) {
         (center_global.x - output_loc.x, center_global.y - output_loc.y)
     }
 
-    /// BASpark filledCircle：实心圆。
+    /// BASpark `index.html:402-411` `updateFilledCircle`：实心圆。
     pub fn filled_circle(
         center_global: Point<f64, Logical>,
         radius_px: f32,
@@ -84,7 +114,7 @@ impl CursorEffectElement {
         aa: f32,
     ) -> Self {
         let (lx, ly) = Self::local(center_global, output_loc);
-        let r = (radius_px.max(0.5)) as f64;
+        let r = radius_px.max(0.5) as f64;
         let size = Size::from((r * 2., r * 2.));
         let loc = Point::from((lx - r, ly - r));
         Self::build(
@@ -97,6 +127,11 @@ impl CursorEffectElement {
                 radius: r as f32,
                 inner_w: 0.0,
                 aa,
+                a0: 0.0,
+                a1: 0.0,
+                p0: [0.0, 0.0],
+                p1: [0.0, 0.0],
+                p2: [0.0, 0.0],
                 trail_a0: 0.0,
                 trail_a1: 0.0,
                 alpha,
@@ -105,11 +140,14 @@ impl CursorEffectElement {
         )
     }
 
-    /// BASpark ring（整环近似；T6 再做弧段切割）。
-    pub fn ring(
+    /// BASpark `index.html:390-397` `_strokeRingSegment`：单段圆弧描边。
+    /// radius=圆弧半径、inner_w=描边宽度、a0/a1=弧起止角度（弧度）。
+    pub fn ring_segment(
         center_global: Point<f64, Logical>,
         radius_px: f32,
         inner_w: f32,
+        a0: f32,
+        a1: f32,
         color: [f32; 3],
         alpha: f32,
         output_loc: Point<f64, Logical>,
@@ -117,8 +155,8 @@ impl CursorEffectElement {
         aa: f32,
     ) -> Self {
         let (lx, ly) = Self::local(center_global, output_loc);
-        let r = (radius_px.max(0.5)) as f64;
-        let reach = r + (inner_w * 0.5 + aa) as f64;
+        // quad 需包络整环 + 描边宽度/2 + 抗锯齿；与圆心同尺寸方形即可。
+        let reach = (radius_px + inner_w * 0.5 + aa).max(0.5) as f64;
         let size = Size::from((reach * 2., reach * 2.));
         let loc = Point::from((lx - reach, ly - reach));
         Self::build(
@@ -128,9 +166,14 @@ impl CursorEffectElement {
                 mode: 1.0,
                 color,
                 center: [reach as f32, reach as f32],
-                radius: r as f32,
+                radius: radius_px,
                 inner_w,
                 aa,
+                a0,
+                a1,
+                p0: [0.0, 0.0],
+                p1: [0.0, 0.0],
+                p2: [0.0, 0.0],
                 trail_a0: 0.0,
                 trail_a1: 0.0,
                 alpha,
@@ -139,30 +182,52 @@ impl CursorEffectElement {
         )
     }
 
-    /// BASpark triangle 碎片（T4 简化：用 quad 包络，shader mode=2 全 alpha）。
-    pub fn triangle(
+    /// BASpark `index.html:509-521` spark 三角形：白色，真实 3 顶点
+    /// `(0,-s)` / `(0.6s, 0.6s)` / `(-0.6s, 0.6s)`，绕中心旋转 rot。
+    pub fn spark_triangle(
         center_global: Point<f64, Logical>,
-        side_px: f32,
-        _rot: f32,
-        color: [f32; 3],
+        side: f32,
+        rot: f32,
         alpha: f32,
         output_loc: Point<f64, Logical>,
         scale: f32,
+        aa: f32,
     ) -> Self {
         let (lx, ly) = Self::local(center_global, output_loc);
-        let s = (side_px.max(0.5)) as f64;
+        let s = side.max(0.5) as f64;
         let size = Size::from((s * 2., s * 2.));
         let loc = Point::from((lx - s, ly - s));
+
+        // 三顶点（相对 quad 中心 (s,s)，先旋转再平移）。
+        // BASpark ctx.translate(cx, cy); ctx.rotate(rot); moveTo/lineTo (0,-s)/(0.6s,0.6s)/(-0.6s,0.6s).
+        let (cosr, sinr) = (rot.cos(), rot.sin());
+        let rot2 = |x: f32, y: f32| -> [f32; 2] {
+            [cosr * x - sinr * y, sinr * x + cosr * y]
+        };
+        let ctr = s as f32;
+        let v0 = rot2(0.0, -ctr);
+        let v1 = rot2(ctr * 0.6, ctr * 0.6);
+        let v2 = rot2(-ctr * 0.6, ctr * 0.6);
+        let p0 = [ctr + v0[0], ctr + v0[1]];
+        let p1 = [ctr + v1[0], ctr + v1[1]];
+        let p2 = [ctr + v2[0], ctr + v2[1]];
+
         Self::build(
             size,
             loc,
             Params {
                 mode: 2.0,
-                color,
-                center: [s as f32, s as f32],
+                // shader 内固定白色（BASpark: rgba(255,255,255,alpha)）
+                color: [1.0, 1.0, 1.0],
+                center: [ctr, ctr],
                 radius: 0.0,
                 inner_w: 0.0,
-                aa: 1.5,
+                aa,
+                a0: 0.0,
+                a1: 0.0,
+                p0,
+                p1,
+                p2,
                 trail_a0: 0.0,
                 trail_a1: 0.0,
                 alpha,
@@ -171,40 +236,51 @@ impl CursorEffectElement {
         )
     }
 
-    /// BASpark trail band：两 trail 点之间的带宽片段。
+    /// BASpark `index.html:360-388` `_updateTrail`：一段描边线段（lineWidth=5）
+    /// + 沿投影参数 t 的线性渐变 alpha（`i/lastIdx → (i+1)/lastIdx`）。
     pub fn trail_segment(
         a_global: Point<f64, Logical>,
         b_global: Point<f64, Logical>,
-        band_w: f32,
-        a0: f32,
-        a1: f32,
+        line_width: f32,
+        alpha_start: f32,
+        alpha_end: f32,
         color: [f32; 3],
         alpha: f32,
         output_loc: Point<f64, Logical>,
         scale: f32,
+        aa: f32,
     ) -> Self {
         let (lax, lay) = Self::local(a_global, output_loc);
         let (lbx, lby) = Self::local(b_global, output_loc);
-        let minx = lax.min(lbx);
-        let miny = lay.min(lby);
-        let maxx = lax.max(lbx);
-        let maxy = lay.max(lby);
-        let w = (maxx - minx) + band_w as f64;
-        let h = (maxy - miny) + band_w as f64;
+        let pad = (line_width * 0.5 + aa) as f64;
+        let minx = lax.min(lbx) - pad;
+        let miny = lay.min(lby) - pad;
+        let maxx = lax.max(lbx) + pad;
+        let maxy = lay.max(lby) + pad;
+        let w = (maxx - minx).max(1.0);
+        let h = (maxy - miny).max(1.0);
         let size = Size::from((w, h));
-        let loc = Point::from((minx - band_w as f64 * 0.5, miny - band_w as f64 * 0.5));
+        let loc = Point::from((minx, miny));
+        // quad 的 p0 = (a 在 quad 内), p1 = (b 在 quad 内)
+        let p0 = [(lax - minx) as f32, (lay - miny) as f32];
+        let p1 = [(lbx - minx) as f32, (lby - miny) as f32];
         Self::build(
             size,
             loc,
             Params {
                 mode: 3.0,
                 color,
-                center: [(w * 0.5) as f32, (h * 0.5) as f32],
+                center: [0.0, 0.0],
                 radius: 0.0,
-                inner_w: band_w,
-                aa: 1.5,
-                trail_a0: a0,
-                trail_a1: a1,
+                inner_w: line_width,
+                aa,
+                a0: 0.0,
+                a1: 0.0,
+                p0,
+                p1,
+                p2: [0.0, 0.0],
+                trail_a0: alpha_start,
+                trail_a1: alpha_end,
                 alpha,
             },
             scale,
@@ -295,10 +371,29 @@ impl<'render> RenderElement<TtyRenderer<'render>> for CursorEffectElement {
     }
 }
 
-/// 收集一个输出上需要绘制的光标特效元素。
+/// BASpark `index.html:420-422` `weightProp` + `getAlpha`：
+/// `weight-prop(t) = min(2 - |4(t - 0.5)|, 1)`；对应两侧到中央的描边宽度峰。
+#[inline]
+fn weight_prop(t: f32) -> f32 {
+    (2.0 - (4.0 * (t - 0.5)).abs()).min(1.0)
+}
+
+/// 把任意角度规范化到 `[-π, π]`（BASpark `ctx.arc` 接受任意值；GL ES
+/// `atan` 返回 `[-π, π]`，规范化后 shader 内的角度命中才会对称）。
+#[inline]
+fn wrap_angle(mut a: f32) -> f32 {
+    use std::f32::consts::TAU;
+    a = (a.rem_euclid(TAU) + TAU).rem_euclid(TAU);
+    if a > std::f32::consts::PI {
+        a -= TAU;
+    }
+    a
+}
+
+/// 收集一个输出上需要绘制的光标特效元素（1:1 翻译 BASpark `_getEffectRects` /
+/// `_updateWaves` / `_updateSparks` / `_updateTrail` 的绘制顺序）。
 ///
-/// 把 `CursorEffectState` 中 waves/sparks/trail 的几何翻译成 `CursorEffectElement`。
-/// 坐标全部是输出局部坐标（screen-global 减 output_loc）。
+/// 所有坐标都先转成输出局部坐标（screen-global 减 output_loc）。
 pub fn collect_render_elements(
     state: &CursorEffectState,
     output_loc: Point<f64, Logical>,
@@ -309,77 +404,177 @@ pub fn collect_render_elements(
         return Vec::new();
     }
     let mut out = Vec::with_capacity(
-        state.waves.len() * 3 + state.sparks.len() + state.trail.len().saturating_sub(1),
+        state.waves.len() * (1 + 2 * state::rings_cfg::SEG_NUM)
+            + state.sparks.len()
+            + state.trail.len(),
     );
 
-    let color_u8 = state.color;
-    let color_f = [color_u8[0] as f32 / 255.0, color_u8[1] as f32 / 255.0, color_u8[2] as f32 / 255.0];
     let opacity = state.opacity;
+    let color_u8 = state.color;
+    let fill_color = [
+        color_u8[0] as f32 / 255.0,
+        color_u8[1] as f32 / 255.0,
+        color_u8[2] as f32 / 255.0,
+    ];
 
-    // Waves: filledCircle + 外环 ring。
+    // ─── Waves: filledCircle + 外圈分段弧 ─ BASpark `_updateWaves` ───
     for w in &state.waves {
-        let wave_prog = (w.life / crate::cursor_effect::state::filled_cfg::MAX_LIFE).clamp(0.0, 1.0);
-        let ease = 1.0 - (1.0 - wave_prog).powi(3); // BASpark cubic out
-        let r = 26.0 * state.scale * ease; // FILLED_CIRCLE_CFG.rAddRate * scale * ease
-        let alpha = (1.0 - wave_prog).max(0.0) * opacity;
-        if alpha <= 0.0 {
+        let wave_prog = (w.life / state::filled_cfg::MAX_LIFE).clamp(0.0, 1.0);
+        let ring_prog = (w.life / state::rings_cfg::MAX_LIFE).clamp(0.0, 1.0);
+
+        // filledCircle：rAddRate * scale * cubic-out ease
+        let ease = 1.0 - (1.0 - wave_prog).powi(3);
+        let fill_r = state::filled_cfg::R_ADD_RATE * state.scale * ease;
+        let fill_alpha = (1.0 - wave_prog).max(0.0) * opacity;
+        if fill_alpha > 0.0 {
+            out.push(CursorEffectElement::filled_circle(
+                Point::from((w.x as f64, w.y as f64)),
+                fill_r,
+                fill_color,
+                fill_alpha,
+                output_loc,
+                scale,
+                aa,
+            ));
+        }
+
+        // rings：每 wave 有 ring.ang、ring.rs、ring.segs[2]，每段再分 SEG_NUM 子段
+        // (index.html:419-482). 描边色用 `ring_rgb_at(ring_prog)` 渐变，alpha 用 `ring_alpha`.
+        let ring_alpha = state.ring_alpha(ring_prog) * opacity;
+        let ring_rgb = state.ring_rgb_at(ring_prog);
+        let line_width_mul = (-0.8 * (ring_prog - 0.8) + 1.0).min(1.0); // index.html:462
+        if ring_alpha <= 0.0 || line_width_mul <= 0.0 {
             continue;
         }
         let center = Point::from((w.x as f64, w.y as f64));
-        out.push(CursorEffectElement::filled_circle(
-            center, r, color_f, alpha, output_loc, scale, aa,
-        ));
+        for seg in &w.ring.segs {
+            // index.html:426-455 计算每段 [start, end] 角度区间。
+            let base = w.ring.ang + seg.off;
+            let (start, end) = if ring_prog <= state::rings_cfg::LEN_STOP_ADD_POINT {
+                let frac = if state::rings_cfg::LEN_STOP_ADD_POINT > 0.0 {
+                    ring_prog / state::rings_cfg::LEN_STOP_ADD_POINT
+                } else {
+                    1.0
+                };
+                let len = seg.len * frac;
+                let end = base + seg.len;
+                (end - len, end)
+            } else if ring_prog > state::rings_cfg::LEN_START_DIM_POINT {
+                let frac = (ring_prog - state::rings_cfg::LEN_START_DIM_POINT)
+                    / (1.0 - state::rings_cfg::LEN_START_DIM_POINT);
+                let len = seg.len * (1.0 - frac).max(0.0);
+                let start = base;
+                (start, start + len)
+            } else {
+                (base, base + seg.len)
+            };
 
-        // ring：半径走 R_ROUND_RATE 偏移 + ring lifetime 衰减。
-        let ring_prog = (w.life / crate::cursor_effect::state::rings_cfg::MAX_LIFE).clamp(0.0, 1.0);
-        let ring_alpha = state.ring_alpha(ring_prog) * opacity;
-        if ring_alpha > 0.0 {
-            let ring_r = r * 2.0; // T4 简化：外环半径 ≈ filled × 2
-            let ring_color = state.ring_rgb_at(ring_prog);
-            out.push(CursorEffectElement::ring(
-                center, ring_r, 2.5, ring_color, ring_alpha, output_loc, scale, aa,
-            ));
+            let radius = w.r + seg.r_round_rate * state.scale; // index.html:477
+
+            // SEG_NUM 子段，每子段 lineWidth 用 weightProp(pts[0]).
+            let seg_num = state::rings_cfg::SEG_NUM;
+            for k in 0..seg_num {
+                let t0 = k as f32 / seg_num as f32;
+                let t1 = (k + 1) as f32 / seg_num as f32;
+                let a0 = start + (end - start) * t0;
+                let a1 = start + (end - start) * t1;
+                if (a1 - a0).abs() < 0.01 {
+                    continue; // index.html:459
+                }
+                let w_t = weight_prop(t0); // index.html:469
+                let lw = (state::rings_cfg::MIN_W * (1.0 - w_t)
+                    + state::rings_cfg::MAX_W * w_t)
+                    * line_width_mul;
+                if lw <= 0.0 {
+                    continue;
+                }
+                // 角度规范化到 [-π, π]，避免 shader 内 `atan` 命中飘移。
+                let (na0, na1) = (wrap_angle(a0), wrap_angle(a1));
+                if na0 >= na1 {
+                    continue;
+                }
+                out.push(CursorEffectElement::ring_segment(
+                    center,
+                    radius,
+                    lw,
+                    na0,
+                    na1,
+                    ring_rgb,
+                    ring_alpha,
+                    output_loc,
+                    scale,
+                    aa,
+                ));
+            }
         }
     }
 
-    // Sparks: 三角形碎片。
+    // ─── Sparks: 白色三角形（BASpark `_updateSparks`，顶点旋转） ─ index.html:509-521
     for s in &state.sparks {
-        let alpha = s.a.max(0.0) * opacity; // BASpark Fragment.a 是衰减 alpha
+        let alpha = s.a.max(0.0) * opacity;
         if alpha <= 0.0 {
             continue;
         }
-        let center = Point::from((s.x as f64, s.y as f64));
-        let side = s.s; // s == BASpark 碎片尺寸
-        out.push(CursorEffectElement::triangle(
-            center, side, s.rot, color_f, alpha, output_loc, scale,
+        out.push(CursorEffectElement::spark_triangle(
+            Point::from((s.x as f64, s.y as f64)),
+            s.s,
+            s.rot,
+            alpha,
+            output_loc,
+            scale,
+            aa,
         ));
     }
 
-    // Trail: 相邻点之间画 band。
-    if state.trail.len() >= 2 {
-        let pts: Vec<_> = state.trail.iter().collect();
-        for pair in pts.windows(2) {
-            let a = pair[0];
-            let b = pair[1];
-            let a0 = a.life * opacity;
-            let a1 = b.life * opacity;
-            if a0 <= 0.0 && a1 <= 0.0 {
+    // ─── Trail: 段渐变 alpha（BASpark `_updateTrail` lineWidth=5） ─ index.html:360-388
+    // pts = trail.concat([head])（BASpark：head = lastPos）。
+    let head = state.last_pos;
+    let pts_count = state.trail.len() + if head.is_some() { 1 } else { 0 };
+    if pts_count >= 2 {
+        // 复制 trail，结尾追加 head 形成完整路径点序列。
+        let mut pts: Vec<(f32, f32, f32)> =
+            state.trail.iter().map(|p| (p.x, p.y, p.life)).collect();
+        if let Some((hx, hy)) = head {
+            // head 视为 life=1（BASpark 追加 `{ x: head.x, y: head.y, life: 1 }`）。
+            pts.push((hx, hy, 1.0));
+        }
+        let last_idx = pts.len() - 1;
+        for i in 0..last_idx {
+            let a = pts[i];
+            let b = pts[i + 1];
+            // 段端 alpha = `i/lastIdx` 与 `(i+1)/lastIdx`，乘 life（BASpark 段渐变）。
+            let sa = a.2 * (i as f32 / last_idx as f32) * opacity;
+            let sb = b.2 * ((i + 1) as f32 / last_idx as f32) * opacity;
+            if sa <= 0.0 && sb <= 0.0 {
                 continue;
             }
-            let pa = Point::from((a.x as f64, a.y as f64));
-            let pb = Point::from((b.x as f64, b.y as f64));
             out.push(CursorEffectElement::trail_segment(
-                pa, pb, 3.0, a0, a1, color_f, 1.0, output_loc, scale,
+                Point::from((a.0 as f64, a.1 as f64)),
+                Point::from((b.0 as f64, b.1 as f64)),
+                5.0, // BASpark ctx.lineWidth = 5.0 (index.html:347)
+                sa,
+                sb,
+                fill_color,
+                1.0,
+                output_loc,
+                scale,
+                aa,
             ));
         }
     } else if state.trail.len() == 1 {
-        // 单点拖尾：画个小圆代表。
+        // BASpark `index.html:331-337` 单点小圆。
         let p = state.trail.front().unwrap();
         let alpha = p.life * opacity;
         if alpha > 0.0 {
-            let center = Point::from((p.x as f64, p.y as f64));
+            let fade = p.life.max(0.0);
             out.push(CursorEffectElement::filled_circle(
-                center, 3.0, color_f, alpha, output_loc, scale, aa,
+                Point::from((p.x as f64, p.y as f64)),
+                2.5 + 2.0 * fade,
+                fill_color,
+                fade * 0.85,
+                output_loc,
+                scale,
+                aa,
             ));
         }
     }

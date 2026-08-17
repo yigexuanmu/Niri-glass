@@ -6116,6 +6116,10 @@ impl Niri {
             state.unfinished_animations_remain |= pointer_anim_ongoing;
             state.unfinished_animations_remain |= magnifier_anim_ongoing;
 
+            // Cursor effects: keep redrawing while any particle is alive, even
+            // if the mouse is idle — waves/sparks/trail still need to advance.
+            state.unfinished_animations_remain |= self.cursor_effect.has_work();
+
             // Also check layer surfaces.
             if !state.unfinished_animations_remain {
                 state.unfinished_animations_remain |= layer_map_for_output(output)
