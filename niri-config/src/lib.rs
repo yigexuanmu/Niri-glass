@@ -77,6 +77,7 @@ pub struct Config {
     pub layout: Layout,
     pub prefer_no_csd: bool,
     pub cursor: Cursor,
+    pub cursor_effect: crate::misc::CursorEffect,
     pub screenshot_path: ScreenshotPath,
     pub clipboard: Clipboard,
     pub hotkey_overlay: HotkeyOverlay,
@@ -198,6 +199,7 @@ where
             match name {
                 "input" => m_merge!(input),
                 "cursor" => m_merge!(cursor),
+                "cursor-effect" => m_merge!(cursor_effect),
                 "clipboard" => m_merge!(clipboard),
                 "hotkey-overlay" => m_merge!(hotkey_overlay),
                 "config-notification" => m_merge!(config_notification),
@@ -1637,6 +1639,30 @@ mod tests {
                     },
                 ),
             },
+            cursor_effect: CursorEffect {
+                enabled: true,
+                scale: 1.5,
+                opacity: 1.0,
+                color: ParticleColor(
+                    [
+                        45,
+                        175,
+                        255,
+                    ],
+                ),
+                use_linked_animation_speed: true,
+                effect_speed: 1.0,
+                trail_speed: 1.0,
+                click_speed: 1.0,
+                trail_refresh_rate: 40,
+                enable_always_trail: false,
+                apply_curve_draw: false,
+                enable_middle_click_trigger: false,
+                click_trigger: Left,
+                hide_in_fullscreen: true,
+                show_on_desktop: true,
+                touch_mode: false,
+            },
             screenshot_path: ScreenshotPath(
                 Some(
                     "~/Screenshots/screenshot.png",
@@ -2717,4 +2743,161 @@ mod tests {
         "#,
         );
     }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 光标特效配置（cursor-effect）解析与合并测试
+    // ───────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cursor_effect_defaults_when_node_absent() {
+        let config = Config::parse_mem("").unwrap();
+        let ce = &config.cursor_effect;
+        assert!(ce.enabled);
+        assert!((ce.scale - 1.5).abs() < 1e-9);
+        assert!((ce.opacity - 1.0).abs() < 1e-9);
+        assert_eq!(ce.color.0, [45, 175, 255], "default BASpark ParticleColor");
+        assert!(ce.use_linked_animation_speed);
+        assert!((ce.effect_speed - 1.0).abs() < 1e-9);
+        assert!((ce.trail_speed - 1.0).abs() < 1e-9);
+        assert!((ce.click_speed - 1.0).abs() < 1e-9);
+        assert_eq!(ce.trail_refresh_rate, 40);
+        assert!(!ce.enable_always_trail);
+        assert!(!ce.apply_curve_draw);
+        assert!(!ce.enable_middle_click_trigger);
+        assert_eq!(ce.click_trigger, ClickTriggerType::Left);
+        assert!(ce.hide_in_fullscreen);
+        assert!(ce.show_on_desktop);
+        assert!(!ce.touch_mode);
+    }
+
+    #[test]
+    fn cursor_effect_parses_color_csv() {
+        let config = Config::parse_mem(
+            r#"
+            cursor-effect {
+                color "10,20,30"
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.cursor_effect.color.0, [10, 20, 30]);
+    }
+
+    #[test]
+    fn cursor_effect_parses_color_css_hex() {
+        let config = Config::parse_mem(
+            r##"
+            cursor-effect {
+                color "#2dafff"
+            }
+            "##,
+        )
+        .unwrap();
+        assert_eq!(
+            config.cursor_effect.color.0,
+            [45, 175, 255],
+            "hex should map back to BASpark default"
+        );
+    }
+
+    #[test]
+    fn cursor_effect_parses_color_rgb_func() {
+        let config = Config::parse_mem(
+            r#"
+            cursor-effect {
+                color "rgb(45,175,255)"
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.cursor_effect.color.0, [45, 175, 255]);
+    }
+
+    #[test]
+    fn cursor_effect_parses_numeric_and_bool_fields() {
+        let config = Config::parse_mem(
+            r#"
+            cursor-effect {
+                scale 2.0
+                opacity 0.5
+                effect-speed 1.5
+                trail-refresh-rate 60
+                enable-always-trail
+                use-linked-animation-speed false
+            }
+            "#,
+        )
+        .unwrap();
+        let ce = &config.cursor_effect;
+        assert!((ce.scale - 2.0).abs() < 1e-9);
+        assert!((ce.opacity - 0.5).abs() < 1e-9);
+        assert!((ce.effect_speed - 1.5).abs() < 1e-9);
+        assert_eq!(ce.trail_refresh_rate, 60);
+        assert!(ce.enable_always_trail);
+        assert!(
+            !ce.use_linked_animation_speed,
+            "explicit false must turn off linked speed"
+        );
+    }
+
+    #[test]
+    fn cursor_effect_parses_click_trigger_variants() {
+        for (text, expected) in [
+            ("left", ClickTriggerType::Left),
+            ("right", ClickTriggerType::Right),
+            ("both", ClickTriggerType::Both),
+            ("0", ClickTriggerType::Left),
+            ("1", ClickTriggerType::Right),
+            ("2", ClickTriggerType::Both),
+        ] {
+            // KDL 要求子节点以换行或 `;` 结尾，故用多行原始字符串。
+            let kdl = format!(
+                "\n            cursor-effect {{\n                click-trigger \"{text}\"\n            }}\n            "
+            );
+            let config = Config::parse_mem(&kdl).unwrap();
+            assert_eq!(config.cursor_effect.click_trigger, expected, "click-trigger {text}");
+        }
+    }
+
+    #[test]
+    fn cursor_effect_parses_toggle_off() {
+        let config = Config::parse_mem(
+            r#"
+            cursor-effect {
+                enabled false
+            }
+            "#,
+        )
+        .unwrap();
+        assert!(
+            !config.cursor_effect.enabled,
+            "enabled false must turn the effect off"
+        );
+    }
+
+    #[test]
+    fn cursor_effect_invalid_color_is_error() {
+        let config = Config::parse_mem(
+            r#"
+            cursor-effect {
+                color "definitely not a color 12345"
+            }
+            "#,
+        );
+        assert!(config.is_err(), "invalid color must fail to parse");
+    }
+
+    #[test]
+    fn cursor_effect_invalid_click_trigger_is_error() {
+        let config = Config::parse_mem(
+            r#"
+            cursor-effect {
+                click-trigger middle
+            }
+            "#,
+        );
+        assert!(config.is_err(), "invalid click-trigger must fail to parse");
+    }
+
 }
+
