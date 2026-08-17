@@ -888,6 +888,16 @@ impl State {
                 self.backend.toggle_debug_tint();
                 self.niri.queue_redraw_all();
             }
+            Action::ToggleCursorEffect => {
+                let ce = &mut self.niri.cursor_effect;
+                ce.enabled = !ce.enabled;
+                let was_disabled = !ce.enabled;
+                if was_disabled {
+                    // 清空粒子池，避免重开后存留 stale 粒子（spec §6.4）。
+                    ce.clear();
+                }
+                self.niri.queue_redraw_all();
+            }
             Action::DebugToggleOpaqueRegions => {
                 self.niri.debug_draw_opaque_regions = !self.niri.debug_draw_opaque_regions;
                 self.niri.queue_redraw_all();

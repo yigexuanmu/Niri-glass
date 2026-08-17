@@ -856,8 +856,10 @@ pub enum Action {
     },
     /// Toggle a debug tint on windows.
     ToggleDebugTint {},
+    /// Toggle the cursor particle effect on/off.
+    ToggleCursorEffect {},
     /// Toggle visualization of render element opaque regions.
-    DebugToggleOpaqueRegions {},
+   DebugToggleOpaqueRegions {},
     /// Toggle visualization of output damage.
     DebugToggleDamage {},
     /// Move the focused window between the floating and the tiling layout.
