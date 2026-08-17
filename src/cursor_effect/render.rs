@@ -62,6 +62,7 @@ impl CursorEffectElement {
         loc: Point<f64, Logical>,
         params: Params,
         scale: f32,
+        trail_pts: &[[f32; 2]],
     ) -> Self {
         let area = Vec2::new(size.w as f32, size.h as f32);
         // 几何充满整个 quad，`geo_loc=0`，所以 `input_to_geo = Scale(area)`，
@@ -69,29 +70,38 @@ impl CursorEffectElement {
         let input_to_geo = Mat3::from_scale(area);
         let geo_size = area;
 
+        let mut uniforms: Vec<Uniform> = vec![
+            mat3_uniform("input_to_geo", input_to_geo),
+            Uniform::new("geo_size", geo_size.to_array()),
+            Uniform::new("u_mode", params.mode),
+            Uniform::new("u_color", params.color),
+            Uniform::new("u_center", params.center),
+            Uniform::new("u_radius", params.radius),
+            Uniform::new("u_inner_w", params.inner_w),
+            Uniform::new("u_aa", params.aa),
+            Uniform::new("u_a0", params.a0),
+            Uniform::new("u_a1", params.a1),
+            Uniform::new("u_p0", params.p0),
+            Uniform::new("u_p1", params.p1),
+            Uniform::new("u_p2", params.p2),
+            Uniform::new("u_trail_a0", params.trail_a0),
+            Uniform::new("u_trail_a1", params.trail_a1),
+            // 根因修复（trail polyline）：单 quad 包络整条折线；shader 内逐段最小
+            // distance field 一次画完，消除逐段 butt-cap 连接点 halo 归零的细缝。
+            // 仅 mode 3 (trail_polyline) 填充 `trail_pts`；其余 mode 传空切片。
+            Uniform::new("u_trail_count", trail_pts.len() as f32),
+        ];
+        for (i, pt) in trail_pts.iter().enumerate() {
+            uniforms.push(Uniform::new(format!("u_trail_pts[{}]", i), *pt));
+        }
+
         let mut inner = ShaderRenderElement::empty(ProgramType::CursorEffect, Kind::Unspecified);
         inner.update(
             size,
             None,
             scale,
             params.alpha,
-            Rc::new([
-                mat3_uniform("input_to_geo", input_to_geo),
-                Uniform::new("geo_size", geo_size.to_array()),
-                Uniform::new("u_mode", params.mode),
-                Uniform::new("u_color", params.color),
-                Uniform::new("u_center", params.center),
-                Uniform::new("u_radius", params.radius),
-                Uniform::new("u_inner_w", params.inner_w),
-                Uniform::new("u_aa", params.aa),
-                Uniform::new("u_a0", params.a0),
-                Uniform::new("u_a1", params.a1),
-                Uniform::new("u_p0", params.p0),
-                Uniform::new("u_p1", params.p1),
-                Uniform::new("u_p2", params.p2),
-                Uniform::new("u_trail_a0", params.trail_a0),
-                Uniform::new("u_trail_a1", params.trail_a1),
-            ]),
+            Rc::from(uniforms),
             HashMap::new(),
         );
         inner = inner.with_location(loc);
@@ -137,6 +147,7 @@ impl CursorEffectElement {
                 alpha,
             },
             scale,
+            &[],
         )
     }
 
@@ -179,6 +190,7 @@ impl CursorEffectElement {
                 alpha,
             },
             scale,
+            &[],
         )
     }
 
@@ -233,38 +245,61 @@ impl CursorEffectElement {
                 alpha,
             },
             scale,
+            &[],
         )
     }
 
     /// BASpark `index.html:360-388` `_updateTrail`：一段描边线段（lineWidth=5）
     /// + 沿投影参数 t 的线性渐变 alpha（`i/lastIdx → (i+1)/lastIdx`）。
-    pub fn trail_segment(
-        a_global: Point<f64, Logical>,
-        b_global: Point<f64, Logical>,
-        line_width: f32,
-        alpha_start: f32,
-        alpha_end: f32,
+    /// BASpark `_updateTrail`：单条 Canvas2D path 描边（`beginPath→lineTo*→stroke()`，
+    /// `lineJoin=miter` 主管段连接无缝）。**根因修复**"逐段 butt-cap
+    /// capsule 在连接点把 halo 归零→出现细缝如线"的断裂。
+    /// `pts_global` 为完整路径点（直线模式 = trail + head；曲线模式 = 扁平化后的折线）。
+    /// 全局参数 `t` 由 shader 按段索引归一化计算 → alpha 即 `t`（BASpark segGrad 拼接后是
+    /// 整体 0→1 线性渐变，无需逐点 alpha 数组，避开 GL ES 2.0 数组动态索引限制）。
+    pub fn trail_polyline(
+        pts_global: &[Point<f64, Logical>],
         color: [f32; 3],
-        alpha: f32,
         output_loc: Point<f64, Logical>,
         scale: f32,
         aa: f32,
-    ) -> Self {
-        let (lax, lay) = Self::local(a_global, output_loc);
-        let (lbx, lby) = Self::local(b_global, output_loc);
-        let pad = (line_width * 0.5 + aa) as f64;
-        let minx = lax.min(lbx) - pad;
-        let miny = lay.min(lby) - pad;
-        let maxx = lax.max(lbx) + pad;
-        let maxy = lay.max(lby) + pad;
-        let w = (maxx - minx).max(1.0);
-        let h = (maxy - miny).max(1.0);
+    ) -> Option<Self> {
+        const MAX_TRAIL_PTS: usize = 128;
+        if pts_global.len() < 2 {
+            return None;
+        }
+        let take = pts_global.len().min(MAX_TRAIL_PTS);
+        let mut local_pts: Vec<[f32; 2]> = Vec::with_capacity(take);
+        let mut minx = f32::MAX;
+        let mut miny = f32::MAX;
+        let mut maxx = f32::MIN;
+        let mut maxy = f32::MIN;
+        for g in pts_global.iter().take(take) {
+            let (lx, ly) = Self::local(*g, output_loc);
+            let x = lx as f32;
+            let y = ly as f32;
+            minx = minx.min(x);
+            miny = miny.min(y);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
+            local_pts.push([x, y]);
+        }
+        // halo 外缘半径 = 5.5（core 半径 2.5 + shadowBlur 3 外扩展）+ aa。
+        let pad = 5.5 + aa;
+        minx -= pad;
+        miny -= pad;
+        maxx += pad;
+        maxy += pad;
+        let w = (maxx - minx).max(1.0) as f64;
+        let h = (maxy - miny).max(1.0) as f64;
         let size = Size::from((w, h));
-        let loc = Point::from((minx, miny));
-        // quad 的 p0 = (a 在 quad 内), p1 = (b 在 quad 内)
-        let p0 = [(lax - minx) as f32, (lay - miny) as f32];
-        let p1 = [(lbx - minx) as f32, (lby - miny) as f32];
-        Self::build(
+        let loc = Point::from((minx as f64, miny as f64));
+        // 平移到 quad 小坐标。
+        for p in local_pts.iter_mut() {
+            p[0] -= minx;
+            p[1] -= miny;
+        }
+        Some(Self::build(
             size,
             loc,
             Params {
@@ -272,19 +307,20 @@ impl CursorEffectElement {
                 color,
                 center: [0.0, 0.0],
                 radius: 0.0,
-                inner_w: line_width,
+                inner_w: 0.0,
                 aa,
                 a0: 0.0,
                 a1: 0.0,
-                p0,
-                p1,
+                p0: [0.0, 0.0],
+                p1: [0.0, 0.0],
                 p2: [0.0, 0.0],
-                trail_a0: alpha_start,
-                trail_a1: alpha_end,
-                alpha,
+                trail_a0: 0.0,
+                trail_a1: 0.0,
+                alpha: 1.0, // niri_alpha: alpha 由 shader 内 best_t 计算，不乘 opacity
             },
             scale,
-        )
+            &local_pts,
+        ))
     }
 
     /// GLES shader 是否就绪。
@@ -525,52 +561,41 @@ pub fn collect_render_elements(
         ));
     }
 
-    // ─── Trail: 段渐变 alpha（BASpark `_updateTrail` lineWidth=5） ─ index.html:360-388
-    // pts = trail.concat([head])（BASpark：head = lastPos）。
+    // ─── Trail: 单条连续 path 描边（BASpark `_updateTrail` lineWidth=5，根因修复
+    // 段连接处断裂：单 quad 包络整条 trail，shader 内整条折线的最小 distance field 一次画完，
+    // 消除逐段 butt-cap 在连接点把 halo 归零的细缝"线一样断裂"）。
     let head = state.last_pos;
-    let pts_count = state.trail.len() + if head.is_some() { 1 } else { 0 };
-    if pts_count >= 2 {
-        // 复制 trail，结尾追加 head 形成完整路径点序列。
-        let mut pts: Vec<(f32, f32, f32)> =
-            state.trail.iter().map(|p| (p.x, p.y, p.life)).collect();
-        if let Some((hx, hy)) = head {
-            // head 视为 life=1（BASpark 追加 `{ x: head.x, y: head.y, life: 1 }`）。
-            pts.push((hx, hy, 1.0));
-        }
-        let last_idx = pts.len() - 1;
-        for i in 0..last_idx {
-            let a = pts[i];
-            let b = pts[i + 1];
-            // B3: BASpark `segGrad.addColorStop(k, rgba(color, k/lastIdx))`（index.html:356-360）
-            // 纯位置渐变，不乘 life、不乘 opacity（不走 this.alpha()）。life 只在
-            // `update_trail` 里决定该点是否回收，不参与绘制 alpha。曲线版每段弦上的
-            // 渐变同样如此（index.html:360-362）。
-            let sa = i as f32 / last_idx as f32;
-            let sb = (i + 1) as f32 / last_idx as f32;
-            if sa <= 0.0 && sb <= 0.0 {
-                continue;
-            }
-            if state.apply_curve_draw {
-                // ─── Catmull-Rom → Cubic Bezier 曲线版（BASpark `ApplyCurveDraw`，
-                // index.html:341-373）逐段 `bezierCurveTo` 描边，alpha 走弦上线性渐变。
-                // 渲染层把每段三次贝塞尔扁平为 `CURVE_SUBSEGS` 段直线胶囊（GPU 光栅化
-                // 曲线本质即折线化；5px 描边 + 张力 /6 的曲率下肉眼不辨）。
-                const CURVE_SUBSEGS: usize = 8;
+    let mut pts: Vec<(f32, f32)> = state.trail.iter().map(|p| (p.x, p.y)).collect();
+    if let Some((hx, hy)) = head {
+        pts.push((hx, hy));
+    }
+    if pts.len() >= 2 {
+        let polyline_pts: Vec<Point<f64, Logical>> = if state.apply_curve_draw {
+            // 曲线版：Catmull-Rom → Cubic Bezier 扁平化（BASpark `ApplyCurveDraw` 拼接，
+            // index.html:341-373）。每段三次贝塞尔扁平为 CURVE_SUBSEGS 个折线点，
+            // 喂给同一 polyline SDF shader（GPU 曲线光栅化本质即折线化；5px 描边
+            // + 张力 /6 的曲率下肉眼不辨，折线 SDF 在拐角处自然 min() 圆滑过渡）。
+            const CURVE_SUBSEGS: usize = 8;
+            let last_idx = pts.len() - 1;
+            let mut out_pts: Vec<Point<f64, Logical>> = Vec::new();
+            for i in 0..last_idx {
+                let a = pts[i];
+                let b = pts[i + 1];
+                if i == 0 {
+                    out_pts.push(Point::from((a.0 as f64, a.1 as f64)));
+                }
+                // BASpark `index.html:347-353` Catmull-Rom 控制点 (张力系数 /6)。
                 let prev = if i > 0 { pts[i - 1] } else { a };
                 let next = if i < last_idx - 1 { pts[i + 2] } else { b };
-                // Catmull-Rom → 贝塞尔控制点（张力系数 /6，对应 BASpark 注释）
                 let cp1x = a.0 + (b.0 - prev.0) / 6.0;
                 let cp1y = a.1 + (b.1 - prev.1) / 6.0;
                 let cp2x = b.0 - (next.0 - a.0) / 6.0;
                 let cp2y = b.1 - (next.1 - a.1) / 6.0;
                 let n = CURVE_SUBSEGS as f32;
-                let mut px = a.0;
-                let mut py = a.1;
                 for k in 1..=CURVE_SUBSEGS {
                     let t = k as f32 / n;
                     let mt = 1.0 - t;
-                    // de Casteljau: B(t) = (1-t)^3 a + 3(1-t)^2 t cp1
-                    //               + 3(1-t) t^2 cp2 + t^3 b
+                    // de Casteljau: B(t) = (1-t)^3 a + 3(1-t)^2 t cp1 + 3(1-t) t^2 cp2 + t^3 b
                     let bx = mt * mt * mt * a.0
                         + 3.0 * mt * mt * t * cp1x
                         + 3.0 * mt * t * t * cp2x
@@ -579,45 +604,22 @@ pub fn collect_render_elements(
                         + 3.0 * mt * mt * t * cp1y
                         + 3.0 * mt * t * t * cp2y
                         + t * t * t * b.1;
-                    let sub_sa = sa + (sb - sa) * ((k - 1) as f32 / n);
-                    let sub_sb = sa + (sb - sa) * (k as f32 / n);
-                    if sub_sa > 0.0 || sub_sb > 0.0 {
-                        out.push(CursorEffectElement::trail_segment(
-                            Point::from((px as f64, py as f64)),
-                            Point::from((bx as f64, by as f64)),
-                            11.0, // halo outer diameter (core 5 + 2*shadowBlur 3 = 11)
-                            sub_sa,
-                            sub_sb,
-                            fill_color,
-                            1.0, // niri_alpha — shader computes combined cov internally
-                            output_loc,
-                            scale,
-                            aa,
-                        ));
-                    }
-                    px = bx;
-                    py = by;
+                    out_pts.push(Point::from((bx as f64, by as f64)));
                 }
-            } else {
-                // ─── 直线版（BASpark `_updateTrail` index.html:375-388）
-                // BASpark `_updateTrail`（index.html:334-336）给 5px trail 描边加
-                // `ctx.shadowBlur=3` 外光晕 (shadowColor=rgba(color,0.6))，halo 与
-                // core 都跟随段 alpha 渐变 (segGrad, 不乘 opacity)。单一 shader 同时画
-                // core(5px 硬) + halo(3px gaussian falloff) + butt caps。quad 须包络
-                // 到 halo 外缘 r=5.5，diameter=11。
-                out.push(CursorEffectElement::trail_segment(
-                    Point::from((a.0 as f64, a.1 as f64)),
-                    Point::from((b.0 as f64, b.1 as f64)),
-                    11.0, // halo outer diameter (core 5 + 2*shadowBlur 3 = 11)
-                    sa,
-                    sb,
-                    fill_color,
-                    1.0, // niri_alpha — shader computes combined cov internally
-                    output_loc,
-                    scale,
-                    aa,
-                ));
             }
+            out_pts
+        } else {
+            // 直线版（BASpark `_updateTrail` index.html:375-388）。直接用原始点序列。
+            pts.iter()
+                .map(|p| Point::from((p.0 as f64, p.1 as f64)))
+                .collect()
+        };
+        // BASpark `_updateTrail`：5px lineWidth 描边 + shadowBlur=3 halo，不乘 opacity。
+        // alpha 走全局位置线陆渐变 (segGrad 缝合 0→1，shader 内由段索引归一化 best_t 求值)。
+        if let Some(el) =
+            CursorEffectElement::trail_polyline(&polyline_pts, fill_color, output_loc, scale, aa)
+        {
+            out.push(el);
         }
     } else if state.trail.len() == 1 {
         // BASpark `index.html:331-337` 单点小圆：`fade = max(0, life)`，半径 `2.5+2*fade`，

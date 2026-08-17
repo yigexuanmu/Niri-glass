@@ -29,8 +29,20 @@ uniform float u_a1;      // ring arc end angle (radians)
 uniform vec2  u_p0;      // trail seg start / triangle vertex 0 (geo px)
 uniform vec2  u_p1;      // trail seg end / triangle vertex 1 (geo px)
 uniform vec2  u_p2;      // triangle vertex 2 (geo px)
-uniform float u_trail_a0; // trail endpoint alpha (start)
-uniform float u_trail_a1; // trail endpoint alpha (end)
+uniform float u_trail_a0; // trail endpoint alpha (start) [legacy, kept compat]
+uniform float u_trail_a1; // trail endpoint alpha (end)   [legacy, kept compat]
+
+// ─── Trail polyline (root-cause fix for segment-junction gaps).
+// Single quad envelopes the ENTIRE trail path. Shader computes min signed
+// distance to the whole polyline as ONE continuous distance field — no
+// per-segment butt-cap boundaries, so halo & core stay continuous across
+// every junction. Mirrors BASpark's single Canvas2D beginPath→lineTo*→stroke()
+// call (lineJoin=miter keeps junctions seamless). prior per-segment capsules
+// had `if (t<0||t>1) return 1e10` caps that zeroed halo at each junction →
+// the "thin line breaks" symptom.
+const int MAX_TRAIL_PTS = 128;
+uniform float u_trail_count;                 // # of polyline points (as float, _1f)
+uniform vec2  u_trail_pts[MAX_TRAIL_PTS];    // polyline pts (geo px, quad-local)
 
 // 1px-aware coverage from a signed distancefield (matches niri convention).
 // Coverage from a signed distancefield, opposite niri_scale (per-pixel) scaling.
@@ -115,30 +127,50 @@ void main() {
         // 浏览器按亚像素覆盖率衰减 pixel alpha（W3C canvas2D sub-pixel coverage），
         // 即 alpha *= min(lineWidth, 1)。我原实现 lw<1 也 saturate-raster → 描边
         // 比 BASpark 厚 ~2-3×。这里用 sd_arc 的实际半宽 + 末尾 alpha 调制精确复刻。
-        float a_stroke = aa_cov(sd_arc(p, u_center, u_radius, u_inner_w, u_a0, u_a1), u_aa);
-        a = a_stroke * min(u_inner_w, 1.0);
+        float d_sd = sd_arc(p, u_center, u_radius, u_inner_w, u_a0, u_a1);
+        // aa_cov 已对描边做覆盖率渐变（半宽 + 0.5 物理 px 软边）：lineWidth<1 时
+        // 自然给出亚像素覆盖（中线 alpha ~0.78、边缘 0.5、外 0），即 Canvas2D
+        // ctx.stroke() 的 W3C sub-pixel coverage。**禁止**再 `× min(u_inner_w,1)`：
+        // 那会整体压低 alpha → 加法混合下 ring 重叠叠不亮 → 泛光失效 + 边缘暗淡生硬。
+        a = aa_cov(d_sd, u_aa);
     } else if (u_mode < 2.5) {
         // spark triangle (BASpark: rgba(255,255,255,alpha))
         a = aa_cov(sd_triangle(p, u_p0, u_p1, u_p2), u_aa);
         rgb = vec3(1.0);
     } else {
-        // trail: BASpark _updateTrail — 5px hard core (lineWidth=5) + 3px shadowBlur
-        // gaussian halo (shadowColor=rgba(color,0.6)), butt caps, linear alpha
-        // gradient along segment parameter (segGrad). Single combined draw replaces
-        // previous solid-11px-halo+separate-core which was over-opaque (Bug: halo
-        // was a solid 0.6 band across full 11px, not BASpark's 3px gaussian falloff).
-        vec2 pa = p - u_p0;
-        vec2 ba = u_p1 - u_p0;
-        float bb = max(dot(ba, ba), 1e-5);
-        float t = dot(pa, ba) / bb;            // unclamped for butt-cap exclusion
-        if (t >= 0.0 && t <= 1.0) {
-            float d = length(pa - ba * t);      // logical px from centerline
-            // core: hard 5px capsule (radius 2.5), 1-px AA
-            float core_cov = aa_cov(d - 2.5, u_aa);
-            // halo: gaussian-ish falloff 0.6 @ d=0 -> 0 @ d=5.5 (shadowBlur=3 beyond core)
-            float halo_cov = 0.6 * (1.0 - smoothstep(0.0, 5.5, d));
-            float grad = (1.0 - t) * u_trail_a0 + t * u_trail_a1;
-            a = (core_cov + halo_cov) * grad;
+        // trail: SINGLE polyline distance field (root-cause fix).
+        // BASpark _updateTrail strokes one Canvas2D path (beginPath → lineTo*
+        // → stroke()); lineJoin=miter keeps junctions seamless. We replicate by
+        // computing min distance to all segments + tracking global parameter
+        // t∈[0,1] along the whole polyline (BASpark's segGrad stitches into a
+        // pure linear 0→1 gradient, so alpha_at_t = best_t exactly — no per-point
+        // alpha array needed and no GL ES 2.0 dynamic-index violation).
+        // core: 5px hard (radius 2.5, 1-px AA). halo: 3px gaussian falloff
+        // 0.6 @ d=0 → 0 @ d=5.5 (shadowBlur=3, shadowColor=rgba(color,0.6)).
+        // trail does NOT multiply opacity (BASpark skips this.alpha() for trail).
+        int n = int(u_trail_count + 0.5);
+        if (n >= 2) {
+            float best_d = 1e10;
+            float best_t = 0.0;
+            for (int i = 0; i < MAX_TRAIL_PTS - 1; i++) {
+                if (i >= n - 1) break;
+                vec2 sa = u_trail_pts[i];
+                vec2 sb = u_trail_pts[i + 1];
+                vec2 pa = p - sa;
+                vec2 ba = sb - sa;
+                float bb = max(dot(ba, ba), 1e-5);
+                float t = clamp(dot(pa, ba) / bb, 0.0, 1.0);
+                float d = length(pa - ba * t);
+                if (d < best_d) {
+                    best_d = d;
+                    float seg0 = float(i)      / float(n - 1);
+                    float seg1 = float(i + 1)  / float(n - 1);
+                    best_t = mix(seg0, seg1, t);
+                }
+            }
+            float core_cov = aa_cov(best_d - 2.5, u_aa);
+            float halo_cov = 0.6 * (1.0 - smoothstep(0.0, 5.5, best_d));
+            a = (core_cov + halo_cov) * best_t;
         }
     }
 
