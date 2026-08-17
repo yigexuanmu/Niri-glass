@@ -4918,7 +4918,9 @@ impl Niri {
         // Cursor effects: draw particle primitives (waves/sparks/trail) above the cursor.
         // T6: apply environment filtering — hide in fullscreen videos / hide on bare desktop.
         let output_loc = output.current_location().to_f64();
-        let aa = 1.5; // anti-alias radius in physical px
+        let aa = 0.5; // anti-alias half-pixel (physical px). Soft edge = 2*aa = 1px,
+                      // matching Canvas2D `ctx.stroke()` hardware AA (~1px). BASpark's
+                      // finest ring lw=0.4px renders as ~1.4px; aa=1.5 had made it 3.4px.
         let ce_enabled = self.cursor_effect.enabled;
         let (hide_in_fullscreen, show_on_desktop) = {
             let ce = &self.config.borrow().cursor_effect;
