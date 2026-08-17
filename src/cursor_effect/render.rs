@@ -549,6 +549,24 @@ pub fn collect_render_elements(
             if sa <= 0.0 && sb <= 0.0 {
                 continue;
             }
+            // BASpark `_updateTrail`（index.html:334-336）给每段 5px trail 描边加
+            // `ctx.shadowBlur=3` + `shadowColor=rgba(this.color, 0.6)` 外光晕，alpha 固定
+            // 0.6、**不随 segment 渐变**（仅 core 走 `segGrad` 0..1）。在
+            // `globalCompositeOperation='lighter'` 加法混合下，halo 外延 + core 5px 实线
+            // 叠加形成柔和发光拖尾。故障根因 R1：原版只画 core 5px 硬胶囊缺 halo，导致
+            // trail 偏窄偏实不够透光。修复：每段双层胶囊（halo 11px + core 5px）。
+            out.push(CursorEffectElement::trail_segment(
+                Point::from((a.0 as f64, a.1 as f64)),
+                Point::from((b.0 as f64, b.1 as f64)),
+                11.0, // core 5 + 2 * shadowBlur 3 = 11 (halo outer extent)
+                0.6,  // halo alpha fixed per shadowColor=rgba(this.color, 0.6)
+                0.6,
+                fill_color,
+                0.6, // niri_alpha for halo
+                output_loc,
+                scale,
+                3.0, // halo 边缘 6px 软渐变带（shadowBlur=3）
+            ));
             out.push(CursorEffectElement::trail_segment(
                 Point::from((a.0 as f64, a.1 as f64)),
                 Point::from((b.0 as f64, b.1 as f64)),
