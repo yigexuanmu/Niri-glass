@@ -367,6 +367,8 @@ pub struct Niri {
 
     pub cursor_manager: CursorManager,
     pub cursor_texture_cache: CursorTextureCache,
+    /// 光标粒子特效运行时状态（cursor-effect 配置节）。
+    pub cursor_effect: crate::cursor_effect::CursorEffectState,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     pub dnd_icon: Option<DndIcon>,
     /// Contents under pointer.
@@ -3267,6 +3269,7 @@ impl Niri {
             xkb_from_locale1: None,
             cursor_manager,
             cursor_texture_cache: Default::default(),
+            cursor_effect: Default::default(),
             cursor_shape_manager_state,
             dnd_icon: None,
             pointer_contents: PointContents::default(),
