@@ -111,8 +111,12 @@ void main() {
         // filledCircle
         a = aa_cov(sd_circle(p, u_center, u_radius), u_aa);
     } else if (u_mode < 1.5) {
-        // ring arc stroke
-        a = aa_cov(sd_arc(p, u_center, u_radius, u_inner_w, u_a0, u_a1), u_aa);
+        // ring arc stroke — 1:1 Canvas2D `ctx.stroke()` 行为：lineWidth<1 时
+        // 浏览器按亚像素覆盖率衰减 pixel alpha（W3C canvas2D sub-pixel coverage），
+        // 即 alpha *= min(lineWidth, 1)。我原实现 lw<1 也 saturate-raster → 描边
+        // 比 BASpark 厚 ~2-3×。这里用 sd_arc 的实际半宽 + 末尾 alpha 调制精确复刻。
+        float a_stroke = aa_cov(sd_arc(p, u_center, u_radius, u_inner_w, u_a0, u_a1), u_aa);
+        a = a_stroke * min(u_inner_w, 1.0);
     } else if (u_mode < 2.5) {
         // spark triangle (BASpark: rgba(255,255,255,alpha))
         a = aa_cov(sd_triangle(p, u_p0, u_p1, u_p2), u_aa);
