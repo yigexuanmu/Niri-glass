@@ -2975,18 +2975,19 @@ impl State {
         self.a11y_notify_pointer_motion();
 
         // Cursor effects: feed pointer motion into the particle state machine (trail).
+        // 1:1 BASpark `mousemove` handler (index.html:112-136): NO time throttle; every
+        // pointer-motion event feeds the state machine (only `dist > 2px` gate inside
+        // `on_move`). BASpark's `TrailRefreshRate` throttles the *overlay render* FPS,
+        // not event sampling — here niri's render is vblank-driven, so we push every
+        // motion event to get dense, smooth trail points (fixes the "broken-line"
+        // stutter caused by 60Hz sampling making segments too long / halo quads not
+        // overlapping at fast mouse speeds).
         {
             let (gx, gy) = (new_pos.x as f32, new_pos.y as f32);
             let now = Instant::now();
             let ce = &mut self.niri.cursor_effect;
             if ce.enabled && (ce.is_down || ce.persistent_trail) {
-                let min_dt = Duration::from_micros(
-                    (1_000_000 / ce.trail_refresh_hz.max(1) as u64) as u64,
-                );
-                if now.duration_since(ce.last_trail_emit) >= min_dt {
-                    ce.last_trail_emit = now;
-                    ce.on_move(gx, gy, now, &mut crate::cursor_effect::state::FastrandRng);
-                }
+                ce.on_move(gx, gy, now, &mut crate::cursor_effect::state::FastrandRng);
             } else {
                 // 即使未触发拖尾，也记当前位置，避免下次启用因 last_pos 陈旧。
                 ce.last_pos = Some((gx, gy));
@@ -3114,13 +3115,7 @@ impl State {
             let now = Instant::now();
             let ce = &mut self.niri.cursor_effect;
             if ce.enabled && (ce.is_down || ce.persistent_trail) {
-                let min_dt = Duration::from_micros(
-                    (1_000_000 / ce.trail_refresh_hz.max(1) as u64) as u64,
-                );
-                if now.duration_since(ce.last_trail_emit) >= min_dt {
-                    ce.last_trail_emit = now;
-                    ce.on_move(gx, gy, now, &mut crate::cursor_effect::state::FastrandRng);
-                }
+                ce.on_move(gx, gy, now, &mut crate::cursor_effect::state::FastrandRng);
             } else {
                 // 即使未触发拖尾，也记当前位置，避免下次启用因 last_pos 陈旧。
                 ce.last_pos = Some((gx, gy));
