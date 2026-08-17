@@ -35,8 +35,13 @@ uniform float u_trail_a1; // trail endpoint alpha (end)
 // 1px-aware coverage from a signed distancefield (matches niri convention).
 // Coverage from a signed distancefield, opposite niri_scale (per-pixel) scaling.
 float aa_cov(float d, float aa) {
-    // `niri_scale` (pixels-per-point) gives crisp anti-aliasing across DPI.
-    return 1.0 - smoothstep(-aa * niri_scale, aa * niri_scale, d);
+    // Bug1 fix: 仓库标准 AA 模式 (rounding_alpha.frag:25) — niri_scale 应
+    // 乘在被比较的 d 上 (logical->physical) 而非 smoothstep 阈值。原实现
+    // smoothstep(-aa*ns, +aa*ns, d) 让软边膨胀为 2*aa*ns^2 物理 px，
+    // HiDPI 下 ring 爆裂段比 BASpark 扩 3 倍宽。
+    // 正确: d 乘 niri_scale 转物理，半物理像素 aa (=0.5) -> 1 物理 px 软边。
+    float t = clamp(d * niri_scale + aa, 0.0, 1.0);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
 }
 
 // SDF of a filled circle (BASpark ctx.arc + fill).
@@ -83,9 +88,15 @@ float sd_triangle(vec2 p, vec2 a, vec2 b, vec2 cy) {
 }
 
 // SDF of a capsule / line segment stroke (BASpark trail lineWidth=5).
-float sd_capsule(vec2 p, vec2 a, vec2 b, float w) {
+// Bug2 fix: 平端 (butt caps) capsule — 段内画圆角矩形(lineWidth=w)，端点外不画
+// 任何半圆端帽。配合加法混合避免相邻段端帽在交界点 4x 叠加产生高亮点。
+// BASpark Canvas2D: 全 trail 单条 beginPath -> lineTo -> stroke() 一次描边,
+// default lineCap='butt' + 段间端点共享无重叠 -> 无 junction 高亮。
+float sd_capsule_butt(vec2 p, vec2 a, vec2 b, float w) {
     vec2 pa = p - a, ba = b - a;
-    float t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
+    float bb = max(dot(ba, ba), 1e-5);
+    float t = dot(pa, ba) / bb;        // 不 clamp：端点外侧由下方判定排除
+    if (t < 0.0 || t > 1.0) return 1e10;
     return length(pa - ba * t) - w * 0.5;
 }
 
@@ -107,12 +118,24 @@ void main() {
         a = aa_cov(sd_triangle(p, u_p0, u_p1, u_p2), u_aa);
         rgb = vec3(1.0);
     } else {
-        // trail capsule with linear alpha gradient along the segment param
+        // trail: BASpark _updateTrail — 5px hard core (lineWidth=5) + 3px shadowBlur
+        // gaussian halo (shadowColor=rgba(color,0.6)), butt caps, linear alpha
+        // gradient along segment parameter (segGrad). Single combined draw replaces
+        // previous solid-11px-halo+separate-core which was over-opaque (Bug: halo
+        // was a solid 0.6 band across full 11px, not BASpark's 3px gaussian falloff).
         vec2 pa = p - u_p0;
         vec2 ba = u_p1 - u_p0;
-        float t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
-        float sd = sd_capsule(p, u_p0, u_p1, u_inner_w);
-        a = aa_cov(sd, u_aa) * ((1.0 - t) * u_trail_a0 + t * u_trail_a1);
+        float bb = max(dot(ba, ba), 1e-5);
+        float t = dot(pa, ba) / bb;            // unclamped for butt-cap exclusion
+        if (t >= 0.0 && t <= 1.0) {
+            float d = length(pa - ba * t);      // logical px from centerline
+            // core: hard 5px capsule (radius 2.5), 1-px AA
+            float core_cov = aa_cov(d - 2.5, u_aa);
+            // halo: gaussian-ish falloff 0.6 @ d=0 -> 0 @ d=5.5 (shadowBlur=3 beyond core)
+            float halo_cov = 0.6 * (1.0 - smoothstep(0.0, 5.5, d));
+            float grad = (1.0 - t) * u_trail_a0 + t * u_trail_a1;
+            a = (core_cov + halo_cov) * grad;
+        }
     }
 
     float alpha = a * niri_alpha;
