@@ -18,6 +18,7 @@ pub struct Shaders {
     pub resize: Option<ShaderProgram>,
     pub gradient_fade: Option<GlesTexProgram>,
     pub blur: Option<BlurProgram>,
+    pub cursor_effect: Option<ShaderProgram>,
     pub custom_resize: RefCell<Option<ShaderProgram>>,
     pub custom_close: RefCell<Option<ShaderProgram>>,
     pub custom_open: RefCell<Option<ShaderProgram>>,
@@ -30,6 +31,7 @@ pub enum ProgramType {
     Resize,
     Close,
     Open,
+    CursorEffect,
 }
 
 impl Shaders {
@@ -148,6 +150,26 @@ impl Shaders {
             })
             .ok();
 
+        let cursor_effect = ShaderProgram::compile(
+            renderer,
+            include_str!("cursor_effect.frag"),
+            &[
+                UniformName::new("u_mode", UniformType::_1f),
+                UniformName::new("u_color", UniformType::_3f),
+                UniformName::new("u_center", UniformType::_2f),
+                UniformName::new("u_radius", UniformType::_1f),
+                UniformName::new("u_inner_w", UniformType::_1f),
+                UniformName::new("u_aa", UniformType::_1f),
+                UniformName::new("u_trail_a0", UniformType::_1f),
+                UniformName::new("u_trail_a1", UniformType::_1f),
+            ],
+            &[],
+        )
+        .map_err(|err| {
+            warn!("error compiling cursor_effect shader: {err:?}");
+        })
+        .ok();
+
         Self {
             border,
             shadow,
@@ -156,6 +178,7 @@ impl Shaders {
             resize,
             gradient_fade,
             blur,
+            cursor_effect,
             custom_resize: RefCell::new(None),
             custom_close: RefCell::new(None),
             custom_open: RefCell::new(None),
@@ -207,6 +230,7 @@ impl Shaders {
                 .or_else(|| self.resize.clone()),
             ProgramType::Close => self.custom_close.borrow().clone(),
             ProgramType::Open => self.custom_open.borrow().clone(),
+            ProgramType::CursorEffect => self.cursor_effect.clone(),
         }
     }
 }

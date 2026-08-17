@@ -4914,6 +4914,18 @@ impl Niri {
                 &mut |elem| push(elem.into()),
             );
         }
+
+        // Cursor effects: draw particle primitives (waves/sparks/trail) above the cursor.
+        let output_loc = output.current_location().to_f64();
+        let aa = 1.5; // anti-alias radius in physical px
+        for elem in crate::cursor_effect::render::collect_render_elements(
+            &self.cursor_effect,
+            output_loc,
+            output_scale.x as f32,
+            aa,
+        ) {
+            push(elem.into());
+        }
     }
 
     /// Checks if the pointer should be included on a window cast or screenshot.
@@ -8211,6 +8223,7 @@ niri_render_elements! {
         NamedPointer = MemoryRenderBufferRenderElement<R>,
         RescaledWayland = RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
         RescaledNamedPointer = RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
+        CursorEffect = crate::cursor_effect::render::CursorEffectElement,
     }
 }
 
