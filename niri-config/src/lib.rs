@@ -2899,5 +2899,52 @@ mod tests {
         assert!(config.is_err(), "invalid click-trigger must fail to parse");
     }
 
+    /// T7 冲烖：一个涵盖全部字段的 `cursor-effect {}` 块必须能成功解析。
+    /// 相当于单元级的 `niri validate` 验证：若启用了光标特效的完整配置
+    /// 导致配置语法/语义错误，niri 将拒加载配置——所以这里必须可解析。
+    #[test]
+    fn cursor_effect_full_block_validates() {
+        let config = Config::parse_mem(
+            r##"
+            cursor-effect {
+                enabled true
+                scale 2.0
+                opacity 0.8
+                color "#2EAFFF"
+                use-linked-animation-speed false
+                effect-speed 1.25
+                trail-speed 0.9
+                click-speed 1.1
+                trail-refresh-rate 60
+                enable-always-trail true
+                apply-curve-draw true
+                enable-middle-click-trigger true
+                click-trigger "both"
+                hide-in-fullscreen false
+                show-on-desktop true
+                touch-mode false
+            }
+            "##,
+        )
+        .unwrap();
+        let ce = &config.cursor_effect;
+        assert!(ce.enabled);
+        assert_eq!(ce.scale, 2.0);
+        assert_eq!(ce.opacity, 0.8);
+        assert_eq!(ce.color.0, [0x2E, 0xAF, 0xFF]);
+        assert!(!ce.use_linked_animation_speed);
+        assert_eq!(ce.effect_speed, 1.25);
+        assert_eq!(ce.trail_speed, 0.9);
+        assert_eq!(ce.click_speed, 1.1);
+        assert_eq!(ce.trail_refresh_rate, 60);
+        assert!(ce.enable_always_trail);
+        assert!(ce.apply_curve_draw);
+        assert!(ce.enable_middle_click_trigger);
+        assert_eq!(ce.click_trigger, ClickTriggerType::Both);
+        assert!(!ce.hide_in_fullscreen);
+        assert!(ce.show_on_desktop);
+        assert!(!ce.touch_mode);
+    }
+
 }
 
