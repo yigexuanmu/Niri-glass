@@ -7,7 +7,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{io, mem};
 
 use anyhow::{anyhow, bail, ensure, Context};
@@ -1867,6 +1867,19 @@ impl Tty {
         target_presentation_time: Duration,
     ) -> RenderResult {
         let span = tracy_client::span!("Tty::render");
+
+        // Cursor effects: advance the particle state machine once per render frame.
+        // If particles are alive, force this output to actually render a frame even
+        // when nothing else damaged it (task 4 will tie output-level filtering).
+        let cursor_effect_alive = niri.advance_cursor_effect(Instant::now());
+        if cursor_effect_alive {
+            tracing::debug!(
+                waves = niri.cursor_effect.waves.len(),
+                sparks = niri.cursor_effect.sparks.len(),
+                trail = niri.cursor_effect.trail.len(),
+                "cursor-effect alive"
+            );
+        }
 
         let mut rv = RenderResult::Skipped;
 

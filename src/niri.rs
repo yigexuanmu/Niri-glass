@@ -1831,6 +1831,10 @@ impl State {
             *CHILD_DISPLAY.write().unwrap() = display_name;
         }
 
+        // Re-apply cursor-effect config. Don't touch `enabled`—it's owned by the runtime toggle (Task 5).
+        let cursor_effect_cfg = self.niri.config.borrow().cursor_effect.clone();
+        self.niri.apply_cursor_effect_config(&cursor_effect_cfg);
+
         // Can't really update xdg-decoration settings since we have to hide the globals for CSD
         // due to the SDL2 bug... I don't imagine clients are prepared for the xdg-decoration
         // global suddenly appearing? Either way, right now it's live-reloaded in a sense that new
@@ -3166,6 +3170,7 @@ impl Niri {
             .unwrap();
 
         let magnifier_zoom_factor = config_.magnifier.zoom_factor;
+        let cursor_effect_cfg = config_.cursor_effect.clone();
         drop(config_);
         let mut niri = Self {
             config,
@@ -3333,6 +3338,12 @@ impl Niri {
             #[cfg(feature = "xdp-gnome-screencast")]
             casting: screencasting,
         };
+
+        // Apply cursor-effect configuration (initial values, including `enabled`).
+        {
+            niri.cursor_effect.enabled = cursor_effect_cfg.enabled;
+            niri.apply_cursor_effect_config(&cursor_effect_cfg);
+        }
 
         niri.reset_pointer_inactivity_timer();
 

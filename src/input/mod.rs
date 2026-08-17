@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::collections::hash_map::Entry;
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use calloop::timer::{TimeoutAction, Timer};
 use input::event::gesture::GestureEventCoordinates as _;
@@ -2964,6 +2964,25 @@ impl State {
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
 
+        // Cursor effects: feed pointer motion into the particle state machine (trail).
+        {
+            let (gx, gy) = (new_pos.x as f32, new_pos.y as f32);
+            let now = Instant::now();
+            let ce = &mut self.niri.cursor_effect;
+            if ce.enabled && (ce.is_down || ce.persistent_trail) {
+                let min_dt = Duration::from_micros(
+                    (1_000_000 / ce.trail_refresh_hz.max(1) as u64) as u64,
+                );
+                if now.duration_since(ce.last_trail_emit) >= min_dt {
+                    ce.last_trail_emit = now;
+                    ce.on_move(gx, gy, now, &mut crate::cursor_effect::state::FastrandRng);
+                }
+            } else {
+                // 即使未触发拖尾，也记当前位置，避免下次启用因 last_pos 陈旧。
+                ce.last_pos = Some((gx, gy));
+            }
+        }
+
         // Redraw to update the cursor position.
         // FIXME: redraw only outputs overlapping the cursor.
         self.niri.queue_redraw_all();
@@ -3078,6 +3097,25 @@ impl State {
         // Notify a11y.
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
+
+        // Cursor effects: feed pointer motion into the particle state machine (trail).
+        {
+            let (gx, gy) = (pos.x as f32, pos.y as f32);
+            let now = Instant::now();
+            let ce = &mut self.niri.cursor_effect;
+            if ce.enabled && (ce.is_down || ce.persistent_trail) {
+                let min_dt = Duration::from_micros(
+                    (1_000_000 / ce.trail_refresh_hz.max(1) as u64) as u64,
+                );
+                if now.duration_since(ce.last_trail_emit) >= min_dt {
+                    ce.last_trail_emit = now;
+                    ce.on_move(gx, gy, now, &mut crate::cursor_effect::state::FastrandRng);
+                }
+            } else {
+                // 即使未触发拖尾，也记当前位置，避免下次启用因 last_pos 陈旧。
+                ce.last_pos = Some((gx, gy));
+            }
+        }
 
         // Redraw to update the cursor position.
         // FIXME: redraw only outputs overlapping the cursor.
@@ -3509,6 +3547,30 @@ impl State {
                     self.confirm_screenshot(true);
                 } else {
                     self.niri.queue_redraw_all();
+                }
+            }
+        }
+
+        // Cursor effects: feed button presses into the particle state machine (click burst).
+        {
+            let is_left = button == Some(MouseButton::Left);
+            let is_right = button == Some(MouseButton::Right);
+            let is_middle = button == Some(MouseButton::Middle);
+            let loc = pointer.current_location();
+            let (gx, gy) = (loc.x as f32, loc.y as f32);
+            let ce = &mut self.niri.cursor_effect;
+            if ButtonState::Pressed == button_state {
+                if ce.enabled && ce.click_trigger.accepts(is_left, is_right) {
+                    ce.is_down = true;
+                    ce.create_effects(gx, gy, &mut crate::cursor_effect::state::FastrandRng);
+                    ce.last_pos = Some((gx, gy));
+                } else if ce.enabled && is_middle && ce.middle_click_trigger {
+                    ce.create_effects(gx, gy, &mut crate::cursor_effect::state::FastrandRng);
+                }
+            } else {
+                // button released (including left/right on a Both trigger)
+                if is_left || is_right {
+                    ce.is_down = false;
                 }
             }
         }

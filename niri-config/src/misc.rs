@@ -327,7 +327,7 @@ where
 }
 
 /// 光标特效配置。字段名与默认值对应 BASpark ConfigManager.cs:65-90。
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CursorEffect {
     /// IsEffectEnabled（总开关，默认 true）。写 `enabled false` 关闭。
     pub enabled: bool,
