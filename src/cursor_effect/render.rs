@@ -16,7 +16,7 @@ use std::rc::Rc;
 use glam::{Mat3, Vec2};
 
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
-use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, Uniform};
+use smithay::backend::renderer::gles::{ffi, GlesError, GlesFrame, GlesRenderer, Uniform};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::gpu_span_location;
 use smithay::utils::user_data::UserDataMap;
@@ -339,9 +339,20 @@ impl RenderElement<GlesRenderer> for CursorEffectElement {
     ) -> Result<(), GlesError> {
         let _span = tracy_client::span!("CursorEffectElement::draw");
         frame.with_gpu_span(gpu_span_location!("CursorEffectElement::draw"), |frame| {
-            RenderElement::<GlesRenderer>::draw(
+            // B1: BASpark 全程 `globalCompositeOperation = "lighter"`（加法混合）做发光叠加。
+            // 我们的 frag 输出为预乘 alpha (`gl_FragColor = vec4(rgb*alpha, alpha)`)，
+            // 故加法混合用 `BlendFunc(ONE, ONE)`（预加色与预加 alpha 项），画完还原
+            // smithay 默认 `BlendFunc(ONE, ONE_MINUS_SRC_ALPHA)`（预乘 over）。
+            frame.with_context(|gl| unsafe {
+                gl.BlendFunc(ffi::ONE, ffi::ONE);
+            })?;
+            let res = RenderElement::<GlesRenderer>::draw(
                 &self.inner, frame, src, dst, damage, opaque_regions, cache,
-            )
+            );
+            frame.with_context(|gl| unsafe {
+                gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
+            })?;
+            res
         })
     }
     fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
@@ -376,18 +387,6 @@ impl<'render> RenderElement<TtyRenderer<'render>> for CursorEffectElement {
 #[inline]
 fn weight_prop(t: f32) -> f32 {
     (2.0 - (4.0 * (t - 0.5)).abs()).min(1.0)
-}
-
-/// 把任意角度规范化到 `[-π, π]`（BASpark `ctx.arc` 接受任意值；GL ES
-/// `atan` 返回 `[-π, π]`，规范化后 shader 内的角度命中才会对称）。
-#[inline]
-fn wrap_angle(mut a: f32) -> f32 {
-    use std::f32::consts::TAU;
-    a = (a.rem_euclid(TAU) + TAU).rem_euclid(TAU);
-    if a > std::f32::consts::PI {
-        a -= TAU;
-    }
-    a
 }
 
 /// 收集一个输出上需要绘制的光标特效元素（1:1 翻译 BASpark `_getEffectRects` /
@@ -440,7 +439,9 @@ pub fn collect_render_elements(
 
         // rings：每 wave 有 ring.ang、ring.rs、ring.segs[2]，每段再分 SEG_NUM 子段
         // (index.html:419-482). 描边色用 `ring_rgb_at(ring_prog)` 渐变，alpha 用 `ring_alpha`.
-        let ring_alpha = state.ring_alpha(ring_prog) * opacity;
+        // B2: BASpark ring `strokeStyle = rgba(rr,gg,bb,alphaRing)` 不走 `this.alpha()`
+        //（index.html:469-469），即不乘 opacity —— 只有 filledCircle/sparks 乘 opacity。
+        let ring_alpha = state.ring_alpha(ring_prog);
         let ring_rgb = state.ring_rgb_at(ring_prog);
         let line_width_mul = (-0.8 * (ring_prog - 0.8) + 1.0).min(1.0); // index.html:462
         if ring_alpha <= 0.0 || line_width_mul <= 0.0 {
@@ -488,17 +489,15 @@ pub fn collect_render_elements(
                 if lw <= 0.0 {
                     continue;
                 }
-                // 角度规范化到 [-π, π]，避免 shader 内 `atan` 命中飘移。
-                let (na0, na1) = (wrap_angle(a0), wrap_angle(a1));
-                if na0 >= na1 {
-                    continue;
-                }
+                // B7: BASpark `ctx.arc(wx,wy,radius,a0,a1)` 原样接受任意 a0<a1（可跨越
+                // ±π 边界）。不再在 Rust 侧 wrap+丢弃，把原始角度直接传给 shader，
+                // shader 用 [0,2π) 归一化 + 前向弧长判定，正确绘制跨边界圆弧。
                 out.push(CursorEffectElement::ring_segment(
                     center,
                     radius,
                     lw,
-                    na0,
-                    na1,
+                    a0,
+                    a1,
                     ring_rgb,
                     ring_alpha,
                     output_loc,
@@ -542,9 +541,11 @@ pub fn collect_render_elements(
         for i in 0..last_idx {
             let a = pts[i];
             let b = pts[i + 1];
-            // 段端 alpha = `i/lastIdx` 与 `(i+1)/lastIdx`，乘 life（BASpark 段渐变）。
-            let sa = a.2 * (i as f32 / last_idx as f32) * opacity;
-            let sb = b.2 * ((i + 1) as f32 / last_idx as f32) * opacity;
+            // B3: BASpark `segGrad.addColorStop(k, rgba(color, k/lastIdx))`（index.html:356-360）
+            // 纯位置渐变，不乘 life、不乘 opacity（不走 this.alpha()）。life 只在
+            // `update_trail` 里决定该点是否回收，不参与绘制 alpha。
+            let sa = i as f32 / last_idx as f32;
+            let sb = (i + 1) as f32 / last_idx as f32;
             if sa <= 0.0 && sb <= 0.0 {
                 continue;
             }
@@ -562,11 +563,11 @@ pub fn collect_render_elements(
             ));
         }
     } else if state.trail.len() == 1 {
-        // BASpark `index.html:331-337` 单点小圆。
+        // BASpark `index.html:331-337` 单点小圆：`fade = max(0, life)`，半径 `2.5+2*fade`，
+        // fillStyle `rgba(color, fade*0.85)` —— 同样不走 this.alpha()，不乘 opacity。
         let p = state.trail.front().unwrap();
-        let alpha = p.life * opacity;
-        if alpha > 0.0 {
-            let fade = p.life.max(0.0);
+        let fade = p.life.max(0.0);
+        if fade > 0.0 {
             out.push(CursorEffectElement::filled_circle(
                 Point::from((p.x as f64, p.y as f64)),
                 2.5 + 2.0 * fade,

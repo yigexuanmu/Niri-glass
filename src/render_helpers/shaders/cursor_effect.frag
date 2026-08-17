@@ -45,13 +45,19 @@ float sd_circle(vec2 p, vec2 c, float r) {
 }
 
 // SDF of a circular arc stroke band (BASpark ctx.arc + stroke lineWidth).
-// Round caps at angle endpoints match `ctx.arc` visual.
+// Handles arbitrary a0 < a1 (may cross the ±π boundary) by normalizing to
+// [0, 2π) and measuring the forward arc length from a0. Round caps at the
+// true endpoints. (B7 fix: BASpark ctx.arc accepts any angle range directly.)
 float sd_arc(vec2 p, vec2 c, float r, float w, float a0, float a1) {
     vec2 d = p - c;
     float ang = atan(d.y, d.x);
-    // Normalize angle delta into the arc extent (expect a0,a1 ∈ [-π, π], a0 ≤ a1).
+    const float TWO_PI = 6.2831853;
+    float na  = mod(ang + TWO_PI, TWO_PI);   // atan() ∈ [-π,π] → [0,2π)
+    float na0 = mod(a0  + TWO_PI, TWO_PI);
+    float arc_len = a1 - a0;                 // > 0 by construction
+    float pos = mod(na - na0 + TWO_PI, TWO_PI); // forward distance from na0
     float sd;
-    if (ang >= a0 && ang <= a1) {
+    if (pos <= arc_len) {
         sd = abs(length(d) - r) - w * 0.5;
     } else {
         vec2 cap0 = c + vec2(cos(a0), sin(a0)) * r;
