@@ -543,29 +543,81 @@ pub fn collect_render_elements(
             let b = pts[i + 1];
             // B3: BASpark `segGrad.addColorStop(k, rgba(color, k/lastIdx))`（index.html:356-360）
             // 纯位置渐变，不乘 life、不乘 opacity（不走 this.alpha()）。life 只在
-            // `update_trail` 里决定该点是否回收，不参与绘制 alpha。
+            // `update_trail` 里决定该点是否回收，不参与绘制 alpha。曲线版每段弦上的
+            // 渐变同样如此（index.html:360-362）。
             let sa = i as f32 / last_idx as f32;
             let sb = (i + 1) as f32 / last_idx as f32;
             if sa <= 0.0 && sb <= 0.0 {
                 continue;
             }
-            // BASpark `_updateTrail`（index.html:334-336）给 5px trail 描边加 `ctx.shadowBlur=3`
-            // 外光晕 (shadowColor=rgba(color,0.6))，halo 与 core 都跟随段 alpha 渐变
-            // (segGrad, 不乘 opacity)。单一 shader 同时画 core(5px 硬) + halo(3px gaussian
-            // falloff) + butt caps，替代旧的实心 11px halo + 独立 core (过度不透明 +
-            // junction 高亮)。quad 须包络到 halo 外缘 r=5.5，diameter=11。
-            out.push(CursorEffectElement::trail_segment(
-                Point::from((a.0 as f64, a.1 as f64)),
-                Point::from((b.0 as f64, b.1 as f64)),
-                11.0, // halo outer diameter (core 5 + 2*shadowBlur 3 = 11)
-                sa,
-                sb,
-                fill_color,
-                1.0, // niri_alpha — shader computes combined cov internally
-                output_loc,
-                scale,
-                aa,
-            ));
+            if state.apply_curve_draw {
+                // ─── Catmull-Rom → Cubic Bezier 曲线版（BASpark `ApplyCurveDraw`，
+                // index.html:341-373）逐段 `bezierCurveTo` 描边，alpha 走弦上线性渐变。
+                // 渲染层把每段三次贝塞尔扁平为 `CURVE_SUBSEGS` 段直线胶囊（GPU 光栅化
+                // 曲线本质即折线化；5px 描边 + 张力 /6 的曲率下肉眼不辨）。
+                const CURVE_SUBSEGS: usize = 8;
+                let prev = if i > 0 { pts[i - 1] } else { a };
+                let next = if i < last_idx - 1 { pts[i + 2] } else { b };
+                // Catmull-Rom → 贝塞尔控制点（张力系数 /6，对应 BASpark 注释）
+                let cp1x = a.0 + (b.0 - prev.0) / 6.0;
+                let cp1y = a.1 + (b.1 - prev.1) / 6.0;
+                let cp2x = b.0 - (next.0 - a.0) / 6.0;
+                let cp2y = b.1 - (next.1 - a.1) / 6.0;
+                let n = CURVE_SUBSEGS as f32;
+                let mut px = a.0;
+                let mut py = a.1;
+                for k in 1..=CURVE_SUBSEGS {
+                    let t = k as f32 / n;
+                    let mt = 1.0 - t;
+                    // de Casteljau: B(t) = (1-t)^3 a + 3(1-t)^2 t cp1
+                    //               + 3(1-t) t^2 cp2 + t^3 b
+                    let bx = mt * mt * mt * a.0
+                        + 3.0 * mt * mt * t * cp1x
+                        + 3.0 * mt * t * t * cp2x
+                        + t * t * t * b.0;
+                    let by = mt * mt * mt * a.1
+                        + 3.0 * mt * mt * t * cp1y
+                        + 3.0 * mt * t * t * cp2y
+                        + t * t * t * b.1;
+                    let sub_sa = sa + (sb - sa) * ((k - 1) as f32 / n);
+                    let sub_sb = sa + (sb - sa) * (k as f32 / n);
+                    if sub_sa > 0.0 || sub_sb > 0.0 {
+                        out.push(CursorEffectElement::trail_segment(
+                            Point::from((px as f64, py as f64)),
+                            Point::from((bx as f64, by as f64)),
+                            11.0, // halo outer diameter (core 5 + 2*shadowBlur 3 = 11)
+                            sub_sa,
+                            sub_sb,
+                            fill_color,
+                            1.0, // niri_alpha — shader computes combined cov internally
+                            output_loc,
+                            scale,
+                            aa,
+                        ));
+                    }
+                    px = bx;
+                    py = by;
+                }
+            } else {
+                // ─── 直线版（BASpark `_updateTrail` index.html:375-388）
+                // BASpark `_updateTrail`（index.html:334-336）给 5px trail 描边加
+                // `ctx.shadowBlur=3` 外光晕 (shadowColor=rgba(color,0.6))，halo 与
+                // core 都跟随段 alpha 渐变 (segGrad, 不乘 opacity)。单一 shader 同时画
+                // core(5px 硬) + halo(3px gaussian falloff) + butt caps。quad 须包络
+                // 到 halo 外缘 r=5.5，diameter=11。
+                out.push(CursorEffectElement::trail_segment(
+                    Point::from((a.0 as f64, a.1 as f64)),
+                    Point::from((b.0 as f64, b.1 as f64)),
+                    11.0, // halo outer diameter (core 5 + 2*shadowBlur 3 = 11)
+                    sa,
+                    sb,
+                    fill_color,
+                    1.0, // niri_alpha — shader computes combined cov internally
+                    output_loc,
+                    scale,
+                    aa,
+                ));
+            }
         }
     } else if state.trail.len() == 1 {
         // BASpark `index.html:331-337` 单点小圆：`fade = max(0, life)`，半径 `2.5+2*fade`，
