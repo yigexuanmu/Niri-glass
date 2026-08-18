@@ -404,7 +404,7 @@ impl CursorEffectState {
                 a: 1.0,
                 f: 0.9,
                 from_click: true,
-                color: self.color_norm(),
+                color: self.color_norm(), // 点击火花：对应按键的爆裂颜色
             });
         }
     }
@@ -462,7 +462,7 @@ impl CursorEffectState {
                     a: 0.7,
                     f: 0.95,
                     from_click: false,
-                    color: self.color_norm(),
+                    color: [1.0, 1.0, 1.0], // 拖尾产生的火花：白色
                 });
             }
         }
