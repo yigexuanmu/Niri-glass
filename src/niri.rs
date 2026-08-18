@@ -4945,6 +4945,7 @@ impl Niri {
         }
         if should_render {
             for elem in crate::cursor_effect::render::collect_render_elements(
+                renderer,
                 &self.cursor_effect,
                 output_loc,
                 output_scale.x as f32,

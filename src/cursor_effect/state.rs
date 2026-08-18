@@ -18,6 +18,10 @@ use std::time::Instant;
 pub mod filled_cfg {
     pub const R_ADD_RATE: f32 = 26.0;
     pub const MAX_LIFE: f32 = 16.0;
+    /// 淡出窗口延长系数：半径/运动仍由 MAX_LIFE 驱动，淡出 alpha 用
+    /// `life / (MAX_LIFE * FADE_EXTEND)` → 圆盘膨胀速度不变，消失更慢、
+    /// 各格错开的淡出时间更明显。
+    pub const FADE_EXTEND: f32 = 4.0;
 }
 
 /// BASpark index.html:36-45  RINGS_ANIM_CFG
@@ -26,6 +30,8 @@ pub mod rings_cfg {
     pub const R_ROUND_RATE_LIST: [f32; 4] = [0.0, 1.0, 1.5, 2.0];
     pub const LEN: f32 = 1.1 * std::f32::consts::PI;
     pub const MAX_LIFE: f32 = 23.0;
+    /// 同上：环的淡出/收缩更慢，位置运动不变；延长后各字符独立消失时间更明显。
+    pub const FADE_EXTEND: f32 = 4.0;
     pub const SEG_NUM: usize = 10;
     pub const MIN_W: f32 = 0.4;
     pub const MAX_W: f32 = 3.3;
@@ -38,7 +44,7 @@ pub mod create_click_cfg {
     pub const RINGS_RS_LIST: [f32; 3] = [0.0, 0.03, 0.06];
     pub const RINGS_R_ROUND_RATE_LIST: [f32; 4] = [0.0, 1.0, 1.5, 2.0];
     pub const RINGS_LEN: f32 = 1.1 * std::f32::consts::PI;
-    pub const SPARKS_COUNT: usize = 4;
+    pub const SPARKS_COUNT: usize = 8;
 }
 
 /// BASpark index.html:66-68  animationLoops 帧率归一参数
@@ -86,6 +92,9 @@ pub struct Wave {
     pub r: f32,
     pub life: f32,
     pub ring: Ring,
+    /// 每次点击随机生成的种子：让环/圆盘每个字符的速度、半径、淡出时间
+    /// 每次点击都不同（否则由弧位置 k 派生 → 每次点击几乎一样）。
+    pub seed: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -107,6 +116,9 @@ pub struct TrailPoint {
     pub x: f32,
     pub y: f32,
     pub life: f32,
+    /// 稳定标识（创建时递增分配），用作字符闪烁的随机种子——保证字符只在
+    /// 寿命期内的固定时间点变化，而不是随队列 index 位移而抖动。
+    pub id: u64,
 }
 
 /// BASpark ClickTriggerType（ConfigManager.cs:89）：0=左, 1=右, 2=左右。
@@ -153,6 +165,10 @@ pub struct CursorEffectState {
     pub is_down: bool,
     pub last_frame_time: Instant,
     pub last_trail_emit: Instant,
+    /// 进程起点（字符模式用相对时间做 ~200ms 周期的闪烁节拍）。
+    pub instant0: Instant,
+    /// 拖尾点稳定 id 分配器。
+    pub trail_serial: u64,
 }
 
 impl Default for CursorEffectState {
@@ -191,6 +207,8 @@ impl CursorEffectState {
             is_down: false,
             last_frame_time: now,
             last_trail_emit: now,
+            instant0: now,
+            trail_serial: 0,
         }
     }
 
@@ -256,11 +274,13 @@ impl CursorEffectState {
             let i = (rng.f32() * slice.len() as f32) as usize;
             slice[i.min(slice.len() - 1)]
         };
+        let wave_seed = ((rng.f32() as f64 * 1e9) as u64) ^ (((rng.f32() as f64 * 1e9) as u64) << 32);
         self.waves.push(Wave {
             x,
             y,
             r: 0.0,
             life: 0.0,
+            seed: wave_seed,
             ring: Ring {
                 ang: rng.f32() * TAU,
                 rs: pick(rng, &create_click_cfg::RINGS_RS_LIST),
@@ -324,10 +344,12 @@ impl CursorEffectState {
             let steps = ((d / 2.0).ceil().max(1.0)) as usize;
             for k in 1..=steps {
                 let t = k as f32 / steps as f32;
+                self.trail_serial = self.trail_serial.wrapping_add(1);
                 self.trail.push_back(TrailPoint {
                     x: rx + (p.0 - rx) * t,
                     y: ry + (p.1 - ry) * t,
                     life: 1.0,
+                    id: self.trail_serial,
                 });
             }
             while self.trail.len() > self.max_trail {
@@ -390,12 +412,12 @@ impl CursorEffectState {
     fn update_trail(&mut self, trail_fs: f32) {
         let n = self.trail.len();
         let base_decay = if self.persistent_trail {
-            0.045
+            0.035
         } else if self.is_down {
-            0.045
+            0.035
         } else {
-            0.18
-        }; // index.html:292-296
+            0.10
+        }; // index.html:292-296（数值调慢：拖尾消失更慢，位置/速度不变）
         let base_decay = base_decay * trail_fs;
         let max_step = 0.42; // index.html:297
         let span = (n as f32 - 1.0).max(1.0);
@@ -424,12 +446,14 @@ impl CursorEffectState {
             let recycle = {
                 let w = &mut self.waves[i];
                 w.life += click_fs; // index.html:404-405
-                let wave_prog = (w.life / filled_cfg::MAX_LIFE).min(1.0); // index.html:444
-                let ring_prog = (w.life / rings_cfg::MAX_LIFE).min(1.0); // index.html:445
+                let wave_prog = (w.life / filled_cfg::MAX_LIFE).min(1.0); // index.html:444（运动）
                 let ease = 1.0 - (1.0 - wave_prog).powi(3); // index.html:407
                 w.r = filled_cfg::R_ADD_RATE * self.scale * ease; // index.html:408
                 w.ring.ang -= w.ring.rs * click_fs; // index.html:437
-                ring_prog >= 1.0 && wave_prog >= 1.0 // index.html:468-471
+                // 回收等淡出完成（FADE_EXTEND 延长窗口），而非运动完成就回收。
+                let fill_fade_done = w.life >= filled_cfg::MAX_LIFE * filled_cfg::FADE_EXTEND;
+                let ring_fade_done = w.life >= rings_cfg::MAX_LIFE * rings_cfg::FADE_EXTEND;
+                fill_fade_done && ring_fade_done
             };
             if recycle {
                 self.waves.swap_remove(i);
@@ -451,7 +475,7 @@ impl CursorEffectState {
                 s.vx *= s.f.powf(fs); // index.html:502
                 s.vy *= s.f.powf(fs);
                 s.rot += s.rs * fs; // index.html:504
-                s.a -= 0.032 * fs; // index.html:505
+                s.a -= 0.020 * fs; // index.html:505
                 s.a <= 0.0
             };
             if recycle {

@@ -18,7 +18,7 @@ varying vec2 niri_v_coords;
 uniform mat3 input_to_geo;
 uniform vec2 geo_size;
 
-uniform float u_mode;    // 0=filledCircle, 1=ring arc stroke, 2=triangle spark, 3=trail capsule
+uniform float u_mode;    // 0=filledCircle, 1=ring arc stroke, 2=triangle spark, 3=trail capsule, 4=glyph char
 uniform vec3  u_color;    // rgb 0..1 (ignored for sparks → white per BASpark)
 uniform vec2  u_center;  // primitive center (geo px)
 uniform float u_radius;  // px
@@ -31,6 +31,22 @@ uniform vec2  u_p1;      // trail seg end / triangle vertex 1 (geo px)
 uniform vec2  u_p2;      // triangle vertex 2 (geo px)
 uniform float u_trail_a0; // trail endpoint alpha (start) [legacy, kept compat]
 uniform float u_trail_a1; // trail endpoint alpha (end)   [legacy, kept compat]
+
+// ─── Glyph mode (4): random-code character effect ─────────────────────────
+// Atlas 是 Rust 侧用系统默认字体（pango/cairo, "sans"）栅格化成的 BGRA 白字
+// 黑底位图（含 AA 边缘）。RGB 亮度即字形掩码，采样 RGB 而非 alpha，对平台
+// swizzle 免疫。每个字形 ink 居中于 64x64 格子；shader 采样中心 ±24texel。
+uniform sampler2D cursor_glyph_atlas;
+uniform float u_glyph;   // 字形索引（0..94 → ASCII 0x21..0x7E）
+uniform float u_rot;     // 字形旋转（弧度）
+
+const float GLYPH_COLS = 16.0;
+const float GLYPH_ROWS = 8.0;
+const float GLYPH_CELL_W = 64.0;
+const float GLYPH_CELL_H = 64.0;
+const float GLYPH_HALF = 24.0;
+const float GLYPH_ATLAS_W = 1024.0;
+const float GLYPH_ATLAS_H = 512.0;
 
 // ─── Trail polyline (root-cause fix for segment-junction gaps).
 // Single quad envelopes the ENTIRE trail path. Shader computes min signed
@@ -137,7 +153,7 @@ void main() {
         // spark triangle (BASpark: rgba(255,255,255,alpha))
         a = aa_cov(sd_triangle(p, u_p0, u_p1, u_p2), u_aa);
         rgb = vec3(1.0);
-    } else {
+    } else if (u_mode < 3.5) {
         // trail: SINGLE polyline distance field (root-cause fix).
         // BASpark _updateTrail strokes one Canvas2D path (beginPath → lineTo*
         // → stroke()); lineJoin=miter keeps junctions seamless. We replicate by
@@ -171,6 +187,32 @@ void main() {
             float core_cov = aa_cov(best_d - 2.5, u_aa);
             float halo_cov = 0.6 * (1.0 - smoothstep(0.0, 5.5, best_d));
             a = (core_cov + halo_cov) * best_t;
+        }
+    } else {
+        // glyph: 随机代码字符（u_mode >= 3.5）。u_center 为字形中心、u_radius 为
+        // 字形半边长（geo px）、u_rot 旋转、u_glyph 字形索引。几何 y 向下（Canvas
+        // 风格），atlas 数据行 0 = 字形顶部，故 uv.y 直接随 local.y 增大即可保持
+        // 字形正向。轮廓加 1px 透明间隔 + smoothstep 阈值把 LINEAR 软边收紧。
+        vec2 r = p - u_center;
+        float cr = cos(-u_rot);
+        float sr = sin(-u_rot);
+        vec2 pr = vec2(cr * r.x - sr * r.y, sr * r.x + cr * r.y);
+        vec2 local = pr / max(u_radius, 0.01); // [-1,1]
+        if (local.x < -1.0 || local.x > 1.0 || local.y < -1.0 || local.y > 1.0) {
+            a = 0.0;
+        } else {
+            float gcol = mod(u_glyph, GLYPH_COLS);
+            float grow = floor(u_glyph / GLYPH_COLS);
+            float cx = gcol * GLYPH_CELL_W + GLYPH_CELL_W * 0.5;
+            float cy = grow * GLYPH_CELL_H + GLYPH_CELL_H * 0.5;
+            // 字形 ink 居中于格子：采样中心 ±GLYPH_HALF texel。
+            vec2 uv = vec2(
+                (cx + local.x * GLYPH_HALF) / GLYPH_ATLAS_W,
+                (cy + local.y * GLYPH_HALF) / GLYPH_ATLAS_H
+            );
+            vec4 tc = texture2D(cursor_glyph_atlas, uv);
+            float mask = max(max(tc.r, tc.g), tc.b);
+            a = mask;
         }
     }
 

@@ -7,6 +7,7 @@
 //! 实现计划：`docs/superpowers/plans/cursor-effects-implementation.md`
 
 pub mod config;
+pub mod glyphs;
 pub mod render;
 pub mod state;
 

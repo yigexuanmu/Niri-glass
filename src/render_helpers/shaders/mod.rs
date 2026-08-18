@@ -1,10 +1,13 @@
 use std::cell::RefCell;
 
 use glam::Mat3;
+use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::gles::{
-    GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType,
-    UniformValue,
+    GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
+    UniformType, UniformValue,
 };
+use smithay::backend::renderer::ImportMem;
+use smithay::utils::Size;
 
 use super::renderer::NiriRenderer;
 use super::shader_element::ShaderProgram;
@@ -22,6 +25,9 @@ pub struct Shaders {
     /// 必须在 struct 里独立存，不像 custom_resize/close/open 那种被外部覆盖，
     /// 因为它完全由本 crate 的 `cursor_effect::render` 使用。
     pub cursor_effect: Option<ShaderProgram>,
+    /// 字符模式（mode 4）用的字形 atlas 纹理（`glyphs.rs` 展开的 BGRA 位图）。
+    /// 渲染元素共享同一张纹理；`None` 时退回几何粒子模式。
+    pub cursor_effect_atlas: Option<GlesTexture>,
     pub custom_resize: RefCell<Option<ShaderProgram>>,
     pub custom_close: RefCell<Option<ShaderProgram>>,
     pub custom_open: RefCell<Option<ShaderProgram>>,
@@ -234,6 +240,9 @@ impl Shaders {
             UniformName::new("u_trail_a0", UniformType::_1f),
             UniformName::new("u_trail_a1", UniformType::_1f),
             UniformName::new("u_trail_count", UniformType::_1f),
+            // mode 4 glyph：字形索引 + 旋转（atlas 纹理在 texture_uniforms 注册）。
+            UniformName::new("u_glyph", UniformType::_1f),
+            UniformName::new("u_rot", UniformType::_1f),
         ];
         for i in 0..CURSOR_EFFECT_MAX_TRAIL_PTS {
             cursor_effect_uniforms.push(UniformName::new(
@@ -245,12 +254,29 @@ impl Shaders {
             renderer,
             include_str!("cursor_effect.frag"),
             &cursor_effect_uniforms,
-            &[],
+            &["cursor_glyph_atlas"],
         )
         .map_err(|err| {
             warn!("error compiling cursor_effect shader: {err:?}");
         })
         .ok();
+
+        // 字形 atlas 纹理：白字黑底的 BGRA（Argb8888）位图，1px 间隔防串字。
+        let glyphs = crate::cursor_effect::glyphs::atlas_bgra();
+        let cursor_effect_atlas = renderer
+            .import_memory(
+                &glyphs,
+                Fourcc::Argb8888,
+                Size::from((
+                    crate::cursor_effect::glyphs::ATLAS_W as i32,
+                    crate::cursor_effect::glyphs::ATLAS_H as i32,
+                )),
+                false,
+            )
+            .map_err(|err| {
+                warn!("error creating cursor_effect glyph atlas: {err:?}");
+            })
+            .ok();
 
         Self {
             border,
@@ -261,6 +287,7 @@ impl Shaders {
             gradient_fade,
             blur,
             cursor_effect,
+            cursor_effect_atlas,
             custom_resize: RefCell::new(None),
             custom_close: RefCell::new(None),
             custom_open: RefCell::new(None),
