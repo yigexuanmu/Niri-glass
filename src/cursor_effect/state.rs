@@ -1,20 +1,18 @@
 //! 光标特效纯逻辑状态机（Cursor Effects pure-logic state machine）。
 //!
-//! BASpark `reference/baspark/index.html` 的 `MouseSpark` 物理/动画逻辑 1:1 翻译为纯 Rust。
-//! 无 GLES、无 niri 渲染依赖，可在单元测试中独立驱动。
+//! 粒子状态（点击爆裂 / 拖尾 / 滚轮圆环 / 火花）的物理与动画推进逻辑，不依赖
+//! GLES 与 niri 渲染，可在单元测试中独立驱动。渲染（`render` 模块）只负责把状态
+//! 翻译成字符粒子绘制。
 //!
-//! 行号引用对应 BASpark `index.html`：常量 @ 34-52，createEffects @ 199-260，
-//! mousemove @ 107-145，updateTrail @ 288-393，updateWaves @ 404-475，
-//! updateSparks @ 490-525，animationLoops/hasWork @ 670-696。
-//! 配置默认值对应 `reference/baspark/ConfigManager.cs:65-90`。
+//! 参考了 BASpark（`DoomVoss/BASpark`）的粒子概念，但数值与行为已大量自定。
 
 use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
-// ────────────────────────── 硬参数常量（直照 BASpark index.html:35-52）──────────────────────────
+// ────────────────────────── 硬参数常量（按特效种类分组）──────────────────────────
 
-/// BASpark index.html:35  FILLED_CIRCLE_CFG
+/// 点击爆裂圆盘（filledCircle）配置
 pub mod filled_cfg {
     pub const R_ADD_RATE: f32 = 26.0;
     pub const MAX_LIFE: f32 = 16.0;
@@ -24,7 +22,7 @@ pub mod filled_cfg {
     pub const FADE_EXTEND: f32 = 4.0;
 }
 
-/// BASpark index.html:36-45  RINGS_ANIM_CFG
+/// 点击爆裂外圈环（rings）配置
 pub mod rings_cfg {
     pub const RS_LIST: [f32; 3] = [0.0, 0.08, 0.1];
     pub const R_ROUND_RATE_LIST: [f32; 4] = [0.0, 1.0, 1.5, 2.0];
@@ -39,7 +37,7 @@ pub mod rings_cfg {
     pub const LEN_START_DIM_POINT: f32 = 0.4;
 }
 
-/// BASpark index.html:47-52  CREATE_CLICK_CFG
+/// 点击爆裂生成配置
 pub mod create_click_cfg {
     pub const RINGS_RS_LIST: [f32; 3] = [0.0, 0.03, 0.06];
     pub const RINGS_R_ROUND_RATE_LIST: [f32; 4] = [0.0, 1.0, 1.5, 2.0];
@@ -47,7 +45,7 @@ pub mod create_click_cfg {
     pub const SPARKS_COUNT: usize = 8;
 }
 
-/// 滚轮代码圆环配置（自定义，非 BASpark）。
+/// 滚轮代码圆环配置（自定特效）。
 pub mod scroll_cfg {
     /// 圆环半径（scale=1.5 时），渲染时按 scale/1.5 缩放。
     pub const RADIUS: f32 = 62.0;
@@ -74,7 +72,7 @@ pub mod scroll_cfg {
     pub const COLOR_UP: [f32; 3] = [158.0 / 255.0, 1.0, 150.0 / 255.0];
 }
 
-/// BASpark index.html:66-68  animationLoops 帧率归一参数
+/// 帧率归一参数（基准 60Hz，delta 上限 100ms）
 pub const BASE_FRAME_MS: f32 = 1000.0 / 60.0;
 pub const MAX_DELTA_MS: f32 = 100.0;
 
@@ -108,7 +106,7 @@ impl EffectRng for FastrandRng {
     }
 }
 
-// ────────────────────────── 数据结构（对应 BASpark wave/ring/spark/trail）──────────────────────────
+// ────────────────────────── 数据结构（粒子实体）──────────────────────────
 
 #[derive(Debug, Clone, Copy)]
 pub struct RingSeg {
@@ -188,7 +186,7 @@ pub struct ScrollRing {
     pub spark_sn: u64,
 }
 
-/// BASpark ClickTriggerType（ConfigManager.cs:89）：0=左, 1=右, 2=左右。
+/// 点击触发按键：左键 / 右键 / 左右皆可。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickTrigger {
     Left,
@@ -196,7 +194,7 @@ pub enum ClickTrigger {
     Both,
 }
 
-/// BASpark index.html:55-57  ringsEndColorFromRgb：c → (c + 255*2) / 3。
+/// 环末端颜色 = 各通道向 255 拉近 2/3：c → (c + 255*2) / 3。
 pub fn rings_end_color_from_rgb(rgb: [u8; 3]) -> [f32; 3] {
     let map = |c: u8| (c as f32 + 255.0 * 2.0) / 3.0;
     [map(rgb[0]), map(rgb[1]), map(rgb[2])]
@@ -204,7 +202,7 @@ pub fn rings_end_color_from_rgb(rgb: [u8; 3]) -> [f32; 3] {
 
 // ────────────────────────── 状态机 ──────────────────────────
 
-/// 光标特效运行时状态。BASpark `MouseSpark`（index.html:59-77）的 Rust 对应。
+/// 光标特效运行时状态。
 #[derive(Debug)]
 pub struct CursorEffectState {
     pub enabled: bool,
@@ -251,30 +249,30 @@ impl Default for CursorEffectState {
 }
 
 impl CursorEffectState {
-    /// BASpark index.html:62-77 构造 + ConfigManager.cs:65-90 默认值。
+    /// 构造并填充默认值。
     pub fn new() -> Self {
-        let color = [45, 175, 255]; // ParticleColor 默认
+        let color = [45, 175, 255]; // 默认左键爆裂蓝
         let now = Instant::now();
         Self {
-            enabled: true, // IsEffectEnabled
+            enabled: true,
             color,
             color_left: color,
             color_right: [255, 150, 150],  // 浅红（右键）
             color_middle: [255, 235, 150], // 浅黄（中键）
-            rings_end_color: rings_end_color_from_rgb(color), // index.html:77
-            scale: 1.5,      // EffectScale
-            opacity: 1.0,    // EffectOpacity
-            trail_speed: 1.0, // EffectSpeed (link 默认)
+            rings_end_color: rings_end_color_from_rgb(color),
+            scale: 1.5,
+            opacity: 1.0,
+            trail_speed: 1.0,
             click_speed: 1.0,
             max_trail: 320,  // 密集 ~2px 采样需更多点才能维持足够拖尾长度（320 点 ≈ 640px）
-            trail_refresh_hz: 40, // TrailRefreshRate
-            persistent_trail: false, // EnableAlwaysTrailEffect
-            apply_curve_draw: false, // ApplyCurveDraw
-            touch_mode: false, // IsTouchscreenMode
-            click_trigger: ClickTrigger::Left, // ClickTriggerType=0
-            middle_click_trigger: false, // EnableMiddleClickTrigger
-            hide_in_fullscreen: true, // HideInFullscreen
-            show_on_desktop: true, // ShowEffectOnDesktop
+            trail_refresh_hz: 40,
+            persistent_trail: false,
+            apply_curve_draw: false,
+            touch_mode: false,
+            click_trigger: ClickTrigger::Left,
+            middle_click_trigger: false,
+            hide_in_fullscreen: true,
+            show_on_desktop: true,
             waves: Vec::with_capacity(8),
             sparks: Vec::with_capacity(32),
             trail: VecDeque::with_capacity(16),
@@ -288,14 +286,14 @@ impl CursorEffectState {
         }
     }
 
-    /// BASpark index.html:261-264  alpha(value) = clamp(value*opacity, 0, 1)
+    /// alpha(value) = clamp(value*opacity, 0, 1)
     #[inline]
     pub fn alpha(&self, value: f32) -> f32 {
         let v = value.clamp(0.0, 1.0) * self.opacity;
         v.clamp(0.0, 1.0)
     }
 
-    /// 清空所有粒子并复位即时状态（对应 BASpark clearEffects + toggle-off 行为）。
+    /// 清空所有粒子并复位即时状态（关闭特效时调用）。
     pub fn clear(&mut self) {
         self.waves.clear();
         self.sparks.clear();
@@ -306,14 +304,14 @@ impl CursorEffectState {
         self.last_frame_time = Instant::now();
     }
 
-    /// BASpark index.html:404-406  weightProp(t) = min(2 - |4*(t-0.5)|, 1)
+    /// weightProp(t) = min(2 - |4*(t-0.5)|, 1)：环弧段两端的权重（中段 1，两端收敛）。
     #[inline]
     pub fn weight_prop(t: f32) -> f32 {
         (2.0 - (4.0 * (t - 0.5)).abs()).min(1.0)
     }
 
-    /// BASpark index.html:419-426  ringRgbAt(r): 在 ringsStart→ringsEnd 插值，t = min(1.2*r,1)。
-    /// 使用给定的末端颜色（per-wave 快照）。
+    /// 环描边色：ringsStart→给定末端色插值，t = min(1.2*r, 1)。
+    /// 使用 per-wave 快照的末端色，避免被后续按键颜色覆盖。
     pub fn ring_rgb_at_with(end: [f32; 3], r_prog: f32) -> [f32; 3] {
         let t = (1.2 * r_prog).min(1.0);
         let start = [250.0, 252.0, 252.0];
@@ -335,14 +333,14 @@ impl CursorEffectState {
         ]
     }
 
-    /// BASpark index.html:427  getAlpha(r) = min(1.1 - 0.3*r, 1)
+    /// ringAlpha(r) = min(1.1 - 0.3*r, 1)
     #[inline]
     pub fn ring_alpha(&self, r_prog: f32) -> f32 {
         (1.1 - 0.3 * r_prog).min(1.0)
     }
 }
 
-// ────────────────────────── 事件注入（对应 BASpark mousedown/mousemove/mouseup）──────────────────────────
+// ────────────────────────── 事件注入（点击 / 移动 / 滚轮）──────────────────────────
 
 impl ClickTrigger {
     /// 是否接受此按键事件。`is_left`/`is_right`/`is_middle` 三个布尔互斥（由调用方从按钮 code 推得）。
@@ -356,7 +354,7 @@ impl ClickTrigger {
 }
 
 impl CursorEffectState {
-    /// BASpark index.html:199-260  createEffects —— 1:1 翻译。
+    /// 创建一次点击爆裂：一条爆裂圆盘 + 外圈环（wave）+ 数颗火花（sparks）。
     pub fn create_effects<R: EffectRng>(&mut self, x: f32, y: f32, rng: &mut R) {
         let rr = create_click_cfg::RINGS_R_ROUND_RATE_LIST;
         let pick = |rng: &mut R, slice: &[f32]| -> f32 {
@@ -389,10 +387,10 @@ impl CursorEffectState {
                 ],
             },
         });
-        let speed_adjust = self.scale / 1.5; // index.html:247
+        let speed_adjust = self.scale / 1.5;
         for _ in 0..create_click_cfg::SPARKS_COUNT {
             let a = rng.f32() * TAU;
-            let speed = (4.8 + rng.f32() * 2.0) * speed_adjust; // index.html:249
+            let speed = (4.8 + rng.f32() * 2.0) * speed_adjust;
             self.sparks.push(Fragment {
                 x,
                 y,
@@ -400,7 +398,7 @@ impl CursorEffectState {
                 vy: a.sin() * speed,
                 rot: rng.f32() * TAU,
                 rs: (rng.f32() - 0.5) * 0.28,
-                s: (4.0 + rng.f32() * 3.0) * self.scale, // index.html:254
+                s: (4.0 + rng.f32() * 3.0) * self.scale,
                 a: 1.0,
                 f: 0.9,
                 from_click: true,
@@ -409,8 +407,8 @@ impl CursorEffectState {
         }
     }
 
-    /// BASpark index.html:107-145  mousemove 拖尾 + 0.3 概率 spawn 拖尾碎片 —— 1:1 翻译。
-    /// 节流（trailRefreshRate）由调用方在 call 前做，本方法只推进逻辑（见计划 §1.5）。
+    /// 指针移动：按下（或常显拖尾）时按 ~2px 间距采样拖尾点，并按 0.3 概率
+    /// 从移动方向甩出一颗白色拖尾火花。
     pub fn on_move<R: EffectRng>(&mut self, nx: f32, ny: f32, _now: Instant, rng: &mut R) {
         if !self.is_down && !self.persistent_trail {
             return;
@@ -452,7 +450,7 @@ impl CursorEffectState {
                 let a = rng.f32() * TAU;
                 let sa = self.scale / 1.5;
                 self.sparks.push(Fragment {
-                    x: p.0 + a.cos() * 10.0 * self.scale, // index.html:130
+                    x: p.0 + a.cos() * 10.0 * self.scale,
                     y: p.1 + a.sin() * 10.0 * self.scale,
                     vx: a.cos() * 1.3 * sa,
                     vy: a.sin() * 1.3 * sa,
@@ -470,10 +468,10 @@ impl CursorEffectState {
     }
 }
 
-// ────────────────────────── 每帧推进（对应 BASpark animationLoops + update*）──────────────────────────
+// ────────────────────────── 每帧推进（寿命 / 运动 / 回收）──────────────────────────
 
 impl CursorEffectState {
-    /// BASpark index.html:681  hasWork：无粒子即冬眠。
+    /// 是否有存活粒子；无粒子时状态机可休眠。
     pub fn has_work(&self) -> bool {
         !self.waves.is_empty()
             || !self.sparks.is_empty()
@@ -482,23 +480,22 @@ impl CursorEffectState {
     }
 
     /// 推进一帧。返回本帧后是否仍有粒子存活（供调用方决定 redraw）。
-    /// 对应 BASpark index.html:670-696 animationLoops + updateTrail/Waves/Sparks。
     pub fn advance(&mut self, now: Instant) -> bool {
         if !self.enabled {
             self.clear();
             return false;
         }
         if !self.has_work() {
-            // index.html:692-696：静止时同步时间基准，避免首帧 delta 顶到 maxDeltaMs。
+            // 静止时同步时间基准，避免首帧 delta 顶到上限。
             self.last_frame_time = now;
             return false;
         }
         let elapsed = now.saturating_duration_since(self.last_frame_time);
-        let delta_ms = (elapsed.as_secs_f32() * 1000.0).min(MAX_DELTA_MS); // index.html:690
+        let delta_ms = (elapsed.as_secs_f32() * 1000.0).min(MAX_DELTA_MS);
         self.last_frame_time = now;
-        let base_scale = delta_ms / BASE_FRAME_MS; // index.html:691
-        let trail_fs = base_scale * self.trail_speed; // index.html:698
-        let click_fs = base_scale * self.click_speed; // index.html:699
+        let base_scale = delta_ms / BASE_FRAME_MS;
+        let trail_fs = base_scale * self.trail_speed;
+        let click_fs = base_scale * self.click_speed;
         self.update_trail(trail_fs);
         self.update_waves(click_fs);
         self.update_sparks(click_fs, trail_fs);
@@ -506,7 +503,7 @@ impl CursorEffectState {
         self.has_work()
     }
 
-    /// BASpark index.html:288-321  updateTrail 寿命衰减（绘制在 render 层）。
+    /// updateTrail：拖尾点寿命衰减（绘制在 render 层）。
     fn update_trail(&mut self, trail_fs: f32) {
         let n = self.trail.len();
         let base_decay = if self.persistent_trail {
@@ -515,15 +512,15 @@ impl CursorEffectState {
             0.035
         } else {
             0.10
-        }; // index.html:292-296（数值调慢：拖尾消失更慢，位置/速度不变）
+        }; // 数值调慢：拖尾消失更慢，位置/速度不变
         let base_decay = base_decay * trail_fs;
-        let max_step = 0.42; // index.html:297
+        let max_step = 0.42;
         let span = (n as f32 - 1.0).max(1.0);
         let mut i = n;
         while i > 0 {
             i -= 1;
-            let along = if n > 1 { i as f32 / span } else { 1.0 }; // index.html:301
-            let bias = 1.25 - 0.55 * along; // index.html:302
+            let along = if n > 1 { i as f32 / span } else { 1.0 };
+            let bias = 1.25 - 0.55 * along;
             let step = (base_decay * bias).min(max_step);
             let p = &mut self.trail[i];
             p.life -= step;
@@ -533,21 +530,20 @@ impl CursorEffectState {
         }
     }
 
-    /// BASpark index.html:404-475  updateWaves 寿命+filled 半径+ring 旋转+回收。
-    /// 段几何（start/end/len/lineWidthMul）在 render 层按 ring_prog 重新计算（与
-    /// _strokeRingSegment 同帧一起），state 层只保留寿命与旋转，weight_prop/ring_rgb_at/
-    /// ring_alpha 作为纯函数供 render 调用。
+    /// updateWaves：爆裂圆盘半径增长 + 外圈环旋转 + 寿命/回收。
+    /// 段几何（start/end/len/lineWidthMul）在 render 层按 ring_prog 重新计算，
+    /// state 层只保留寿命与旋转；`weight_prop`/`ring_rgb_at`/`ring_alpha` 作纯函数供 render 调用。
     fn update_waves(&mut self, click_fs: f32) {
         let mut i = 0;
         while i < self.waves.len() {
             // 先在可变借用内完成全部计算，再决定回收，避免在借用中 swap_remove。
             let recycle = {
                 let w = &mut self.waves[i];
-                w.life += click_fs; // index.html:404-405
-                let wave_prog = (w.life / filled_cfg::MAX_LIFE).min(1.0); // index.html:444（运动）
-                let ease = 1.0 - (1.0 - wave_prog).powi(3); // index.html:407
-                w.r = filled_cfg::R_ADD_RATE * self.scale * ease; // index.html:408
-                w.ring.ang -= w.ring.rs * click_fs; // index.html:437
+                w.life += click_fs;
+                let wave_prog = (w.life / filled_cfg::MAX_LIFE).min(1.0); // 驱动运动
+                let ease = 1.0 - (1.0 - wave_prog).powi(3);
+                w.r = filled_cfg::R_ADD_RATE * self.scale * ease;
+                w.ring.ang -= w.ring.rs * click_fs;
                 // 回收等淡出完成（FADE_EXTEND 延长窗口），而非运动完成就回收。
                 let fill_fade_done = w.life >= filled_cfg::MAX_LIFE * filled_cfg::FADE_EXTEND;
                 let ring_fade_done = w.life >= rings_cfg::MAX_LIFE * rings_cfg::FADE_EXTEND;
@@ -561,25 +557,25 @@ impl CursorEffectState {
         }
     }
 
-    /// BASpark index.html:490-525  updateSparks —— 1:1 翻译（only 寿命/积分，绘制在 render 层）。
+    /// updateSparks：火花位置积分 + 速度/自旋摩擦衰减 + 透明度寿命。
     fn update_sparks(&mut self, click_fs: f32, trail_fs: f32) {
         let mut i = 0;
         while i < self.sparks.len() {
             let recycle = {
                 let s = &mut self.sparks[i];
-                let fs = if s.from_click { click_fs } else { trail_fs }; // index.html:496
-                s.x += s.vx * fs; // index.html:500
+                let fs = if s.from_click { click_fs } else { trail_fs };
+                s.x += s.vx * fs;
                 s.y += s.vy * fs;
-                s.vx *= s.f.powf(fs); // index.html:502
+                s.vx *= s.f.powf(fs);
                 s.vy *= s.f.powf(fs);
-                s.rot += s.rs * fs; // index.html:504
+                s.rot += s.rs * fs;
                 // 拖尾产生的火花（from_click=false）消失更慢（减半）。
                 let a_decay = if s.from_click { 0.020 } else { 0.010 };
-                s.a -= a_decay * fs; // index.html:505
+                s.a -= a_decay * fs;
                 s.a <= 0.0
             };
             if recycle {
-                self.sparks.swap_remove(i); // index.html:506
+                self.sparks.swap_remove(i);
             } else {
                 i += 1;
             }
@@ -732,7 +728,7 @@ mod tests {
 
     #[test]
     fn end_color_formula_is_two_thirds_blend() {
-        // index.html:55-57：c=45 → (45 + 510) / 3 = 185；c=175 → (175+510)/3 = 228.33…；c=255 → 255
+        // c=45 → (45 + 510) / 3 = 185；c=175 → (175+510)/3 = 228.33…；c=255 → 255
         let e = rings_end_color_from_rgb([45, 175, 255]);
         assert!((e[0] - 185.0).abs() < 1e-3);
         assert!((e[1] - 228.333_3).abs() < 1e-3);

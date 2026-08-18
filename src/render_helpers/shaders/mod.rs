@@ -218,38 +218,16 @@ impl Shaders {
             })
             .ok();
 
-        // 光标特效 (1:1 BASpark 复刻) shader。重要：必须在 `additional_uniforms` 注册
-        // frag 里用到的所有 uniform（包括 `u_trail_count` + `u_trail_pts[0..MAX_TRAIL_PTS]`），
-        // 否则 smithay 在 draw 时查不到 location → `UnknownUniform` panic。与 frag 的
-        // `const int MAX_TRAIL_PTS = 128` + render.rs 的 `const MAX_TRAIL_PTS: usize = 128` 对齐。
-        const CURSOR_EFFECT_MAX_TRAIL_PTS: usize = 128;
-        let mut cursor_effect_uniforms: Vec<UniformName> = vec![
+        // 光标特效 glyph shader。必须在 `additional_uniforms` 注册 frag 里用到的
+        // 所有 uniform，否则 smithay 在 draw 时查不到 location → `UnknownUniform` panic。
+        let cursor_effect_uniforms: Vec<UniformName> = vec![
             UniformName::new("input_to_geo", UniformType::Matrix3x3),
-            UniformName::new("geo_size", UniformType::_2f),
-            UniformName::new("u_mode", UniformType::_1f),
             UniformName::new("u_color", UniformType::_3f),
             UniformName::new("u_center", UniformType::_2f),
             UniformName::new("u_radius", UniformType::_1f),
-            UniformName::new("u_inner_w", UniformType::_1f),
-            UniformName::new("u_aa", UniformType::_1f),
-            UniformName::new("u_a0", UniformType::_1f),
-            UniformName::new("u_a1", UniformType::_1f),
-            UniformName::new("u_p0", UniformType::_2f),
-            UniformName::new("u_p1", UniformType::_2f),
-            UniformName::new("u_p2", UniformType::_2f),
-            UniformName::new("u_trail_a0", UniformType::_1f),
-            UniformName::new("u_trail_a1", UniformType::_1f),
-            UniformName::new("u_trail_count", UniformType::_1f),
-            // mode 4 glyph：字形索引 + 旋转（atlas 纹理在 texture_uniforms 注册）。
             UniformName::new("u_glyph", UniformType::_1f),
             UniformName::new("u_rot", UniformType::_1f),
         ];
-        for i in 0..CURSOR_EFFECT_MAX_TRAIL_PTS {
-            cursor_effect_uniforms.push(UniformName::new(
-                format!("u_trail_pts[{i}]"),
-                UniformType::_2f,
-            ));
-        }
         let cursor_effect = ShaderProgram::compile(
             renderer,
             include_str!("cursor_effect.frag"),
