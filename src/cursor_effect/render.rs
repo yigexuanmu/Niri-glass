@@ -16,7 +16,7 @@ use std::rc::Rc;
 use glam::{Mat3, Vec2};
 
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
-use smithay::backend::renderer::gles::{ffi, GlesError, GlesFrame, GlesRenderer, Uniform};
+use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, Uniform};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::gpu_span_location;
 use smithay::utils::user_data::UserDataMap;
@@ -36,7 +36,11 @@ struct Params {
     color: [f32; 3],
     center: [f32; 2],
     radius: f32,
-    inner_w: f32,
+    // ring 描边：shader 内按弧向位置 t 用 weightProp(t) 插值线宽（连续，消除
+    // 原来 SEG_NUM 离散阶梯导致的圆环多边形/锯齿）。非 ring 模式传 0。
+    ring_min_w: f32,
+    ring_max_w: f32,
+    ring_w_mul: f32,
     aa: f32,
     a0: f32,
     a1: f32,
@@ -77,7 +81,9 @@ impl CursorEffectElement {
             Uniform::new("u_color", params.color),
             Uniform::new("u_center", params.center),
             Uniform::new("u_radius", params.radius),
-            Uniform::new("u_inner_w", params.inner_w),
+            Uniform::new("u_ring_min_w", params.ring_min_w),
+            Uniform::new("u_ring_max_w", params.ring_max_w),
+            Uniform::new("u_ring_w_mul", params.ring_w_mul),
             Uniform::new("u_aa", params.aa),
             Uniform::new("u_a0", params.a0),
             Uniform::new("u_a1", params.a1),
@@ -138,7 +144,9 @@ impl CursorEffectElement {
                 color,
                 center: [rc as f32, rc as f32],
                 radius: r as f32,
-                inner_w: 0.0,
+                ring_min_w: 0.0,
+                ring_max_w: 0.0,
+                ring_w_mul: 0.0,
                 aa,
                 a0: 0.0,
                 a1: 0.0,
@@ -155,11 +163,14 @@ impl CursorEffectElement {
     }
 
     /// BASpark `index.html:390-397` `_strokeRingSegment`：单段圆弧描边。
-    /// radius=圆弧半径、inner_w=描边宽度、a0/a1=弧起止角度（弧度）。
+    /// radius=圆弧半径；线宽沿弧向位置 t 用 weightProp(t) 在 [min_w, max_w] 间
+    /// 连续插值（× w_mul），shader 内逐像素求值 → 圆环边缘平滑（无离散阶梯）。
     pub fn ring_segment(
         center_global: Point<f64, Logical>,
         radius_px: f32,
-        inner_w: f32,
+        min_w: f32,
+        max_w: f32,
+        w_mul: f32,
         a0: f32,
         a1: f32,
         color: [f32; 3],
@@ -169,8 +180,8 @@ impl CursorEffectElement {
         aa: f32,
     ) -> Self {
         let (lx, ly) = Self::local(center_global, output_loc);
-        // quad 需包络整环 + 描边宽度/2 + 抗锯齿；与圆心同尺寸方形即可。
-        let reach = (radius_px + inner_w * 0.5 + aa).max(0.5) as f64;
+        // quad 需包络整环 + 最大描边宽度/2 + 抗锯齿；与圆心同尺寸方形即可。
+        let reach = (radius_px + max_w * w_mul * 0.5 + aa).max(0.5) as f64;
         let size = Size::from((reach * 2., reach * 2.));
         let loc = Point::from((lx - reach, ly - reach));
         Self::build(
@@ -181,7 +192,9 @@ impl CursorEffectElement {
                 color,
                 center: [reach as f32, reach as f32],
                 radius: radius_px,
-                inner_w,
+                ring_min_w: min_w,
+                ring_max_w: max_w,
+                ring_w_mul: w_mul,
                 aa,
                 a0,
                 a1,
@@ -240,7 +253,9 @@ impl CursorEffectElement {
                 color: [1.0, 1.0, 1.0],
                 center: [ctr, ctr],
                 radius: 0.0,
-                inner_w: 0.0,
+                ring_min_w: 0.0,
+                ring_max_w: 0.0,
+                ring_w_mul: 0.0,
                 aa,
                 a0: 0.0,
                 a1: 0.0,
@@ -314,7 +329,9 @@ impl CursorEffectElement {
                 color,
                 center: [0.0, 0.0],
                 radius: 0.0,
-                inner_w: 0.0,
+                ring_min_w: 0.0,
+                ring_max_w: 0.0,
+                ring_w_mul: 0.0,
                 aa,
                 a0: 0.0,
                 a1: 0.0,
@@ -382,20 +399,13 @@ impl RenderElement<GlesRenderer> for CursorEffectElement {
     ) -> Result<(), GlesError> {
         let _span = tracy_client::span!("CursorEffectElement::draw");
         frame.with_gpu_span(gpu_span_location!("CursorEffectElement::draw"), |frame| {
-            // B1: BASpark 全程 `globalCompositeOperation = "lighter"`（加法混合）做发光叠加。
-            // 我们的 frag 输出为预乘 alpha (`gl_FragColor = vec4(rgb*alpha, alpha)`)，
-            // 故加法混合用 `BlendFunc(ONE, ONE)`（预加色与预加 alpha 项），画完还原
-            // smithay 默认 `BlendFunc(ONE, ONE_MINUS_SRC_ALPHA)`（预乘 over）。
-            frame.with_context(|gl| unsafe {
-                gl.BlendFunc(ffi::ONE, ffi::ONE);
-            })?;
-            let res = RenderElement::<GlesRenderer>::draw(
+            // 抗锯齿根因修复：特效不再用加法混合（原 BASpark "lighter"）。
+            // 加法混合在亮背景上把 SDF 覆盖率（AA 软边）饱和成硬边 → 表现为锯齿；
+            // 鼠标指针等 niri 其它元素都用普通预乘 alpha（ONE, ONE_MINUS_SRC_ALPHA），
+            // 所以小指针反而平滑。这里直接沿用默认预乘 over 混合即可。
+            RenderElement::<GlesRenderer>::draw(
                 &self.inner, frame, src, dst, damage, opaque_regions, cache,
-            );
-            frame.with_context(|gl| unsafe {
-                gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
-            })?;
-            res
+            )
         })
     }
     fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
@@ -423,13 +433,6 @@ impl<'render> RenderElement<TtyRenderer<'render>> for CursorEffectElement {
     ) -> Option<UnderlyingStorage<'_>> {
         self.inner.underlying_storage(renderer)
     }
-}
-
-/// BASpark `index.html:420-422` `weightProp` + `getAlpha`：
-/// `weight-prop(t) = min(2 - |4(t - 0.5)|, 1)`；对应两侧到中央的描边宽度峰。
-#[inline]
-fn weight_prop(t: f32) -> f32 {
-    (2.0 - (4.0 * (t - 0.5)).abs()).min(1.0)
 }
 
 /// 收集一个输出上需要绘制的光标特效元素（1:1 翻译 BASpark `_getEffectRects` /
@@ -515,39 +518,29 @@ pub fn collect_render_elements(
 
             let radius = w.r + seg.r_round_rate * state.scale; // index.html:477
 
-            // SEG_NUM 子段，每子段 lineWidth 用 weightProp(pts[0]).
-            let seg_num = state::rings_cfg::SEG_NUM;
-            for k in 0..seg_num {
-                let t0 = k as f32 / seg_num as f32;
-                let t1 = (k + 1) as f32 / seg_num as f32;
-                let a0 = start + (end - start) * t0;
-                let a1 = start + (end - start) * t1;
-                if (a1 - a0).abs() < 0.01 {
-                    continue; // index.html:459
-                }
-                let w_t = weight_prop(t0); // index.html:469
-                let lw = (state::rings_cfg::MIN_W * (1.0 - w_t)
-                    + state::rings_cfg::MAX_W * w_t)
-                    * line_width_mul;
-                if lw <= 0.0 {
-                    continue;
-                }
-                // B7: BASpark `ctx.arc(wx,wy,radius,a0,a1)` 原样接受任意 a0<a1（可跨越
-                // ±π 边界）。不再在 Rust 侧 wrap+丢弃，把原始角度直接传给 shader，
-                // shader 用 [0,2π) 归一化 + 前向弧长判定，正确绘制跨边界圆弧。
-                out.push(CursorEffectElement::ring_segment(
-                    center,
-                    radius,
-                    lw,
-                    a0,
-                    a1,
-                    ring_rgb,
-                    ring_alpha,
-                    output_loc,
-                    scale,
-                    aa,
-                ));
+            // 连续线宽（抗锯齿）：不再切成 SEG_NUM 离散子段（每段固定线宽 → 圆环
+            // 呈 10 边形/锯齿）。整段画一条弧，线宽由 shader 按弧向位置 t 用
+            // weightProp(t) 在 [MIN_W, MAX_W] 连续插值（× line_width_mul）。
+            if (end - start).abs() < 0.01 {
+                continue; // index.html:459
             }
+            // B7: BASpark `ctx.arc(wx,wy,radius,a0,a1)` 原样接受任意 a0<a1（可跨越
+            // ±π 边界）。不再在 Rust 侧 wrap+丢弃，把原始角度直接传给 shader，
+            // shader 用 [0,2π) 归一化 + 前向弧长判定，正确绘制跨边界圆弧。
+            out.push(CursorEffectElement::ring_segment(
+                center,
+                radius,
+                state::rings_cfg::MIN_W,
+                state::rings_cfg::MAX_W,
+                line_width_mul,
+                start,
+                end,
+                ring_rgb,
+                ring_alpha,
+                output_loc,
+                scale,
+                aa,
+            ));
         }
     }
 
