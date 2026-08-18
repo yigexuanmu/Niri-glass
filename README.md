@@ -100,4 +100,4 @@ inputs.niri-glass.url = "github:yigexuanmu/Niri-glass/beta";
 ```
 
 > ⚠️ 再提醒一次：个人向分支，配置和行为以我自己的习惯为准，遇到问题请以官方
-> [YaLTeR/niri](https://github.com/YaLTeR/niri) 为准。
+> [niri-wm/niri](https://github.com/niri-wm/niri) 为准。
