@@ -35,8 +35,8 @@ impl Niri {
         ce.scale = cfg.scale as f32;
         ce.opacity = cfg.opacity as f32;
         // BASpark 硬编码 maxTrail = 16；但我们按 ~2px 密集采样（每事件 + 段内细分），
-        // 16 点只够 ~32px 拖尾，太短。提高到 96 点（≈192px）保持拖尾长度且平滑。
-        ce.max_trail = 96;
+        // 16 点只够 ~32px 拖尾，太短。提高到 320 点（≈640px）保持拖尾长度且平滑。
+        ce.max_trail = 320;
         ce.trail_refresh_hz = cfg.trail_refresh_rate;
         ce.color = cfg.color.0;
         ce.rings_end_color = state::rings_end_color_from_rgb(cfg.color.0);

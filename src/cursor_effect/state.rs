@@ -175,7 +175,7 @@ impl CursorEffectState {
             opacity: 1.0,    // EffectOpacity
             trail_speed: 1.0, // EffectSpeed (link 默认)
             click_speed: 1.0,
-            max_trail: 96,   // 密集 ~2px 采样需更多点才能维持足够拖尾长度（96 点 ≈ 192px）
+            max_trail: 320,  // 密集 ~2px 采样需更多点才能维持足够拖尾长度（320 点 ≈ 640px）
             trail_refresh_hz: 40, // TrailRefreshRate
             persistent_trail: false, // EnableAlwaysTrailEffect
             apply_curve_draw: false, // ApplyCurveDraw
@@ -390,9 +390,9 @@ impl CursorEffectState {
     fn update_trail(&mut self, trail_fs: f32) {
         let n = self.trail.len();
         let base_decay = if self.persistent_trail {
-            0.085
+            0.045
         } else if self.is_down {
-            0.085
+            0.045
         } else {
             0.18
         }; // index.html:292-296
