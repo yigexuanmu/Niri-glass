@@ -40,6 +40,7 @@ impl Niri {
         ce.max_trail = 320;
         ce.trail_refresh_hz = cfg.trail_refresh_rate;
         ce.color = cfg.color.0;
+        ce.color_left = cfg.color.0;
         ce.rings_end_color = state::rings_end_color_from_rgb(cfg.color.0);
 
         ce.click_trigger = match cfg.click_trigger {

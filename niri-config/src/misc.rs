@@ -377,7 +377,7 @@ impl Default for CursorEffect {
             trail_refresh_rate: 40,
             enable_always_trail: false,
             apply_curve_draw: false,
-            enable_middle_click_trigger: false,
+            enable_middle_click_trigger: true,
             click_trigger: ClickTriggerType::Left,
             hide_in_fullscreen: true,
             show_on_desktop: true,

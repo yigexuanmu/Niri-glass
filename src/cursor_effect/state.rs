@@ -142,6 +142,12 @@ pub fn rings_end_color_from_rgb(rgb: [u8; 3]) -> [f32; 3] {
 pub struct CursorEffectState {
     pub enabled: bool,
     pub color: [u8; 3],
+    /// 左键点击的爆裂颜色（= 配置 `color`）。
+    pub color_left: [u8; 3],
+    /// 右键点击的爆裂颜色（浅红）。
+    pub color_right: [u8; 3],
+    /// 中键点击的爆裂颜色（浅黄）。
+    pub color_middle: [u8; 3],
     pub rings_start_color: [f32; 3],
     pub rings_end_color: [f32; 3],
     pub scale: f32,
@@ -185,6 +191,9 @@ impl CursorEffectState {
         Self {
             enabled: true, // IsEffectEnabled
             color,
+            color_left: color,
+            color_right: [255, 150, 150],  // 浅红（右键）
+            color_middle: [255, 235, 150], // 浅黄（中键）
             rings_start_color: [250.0, 252.0, 252.0], // index.html:76
             rings_end_color: rings_end_color_from_rgb(color), // index.html:77
             scale: 1.5,      // EffectScale

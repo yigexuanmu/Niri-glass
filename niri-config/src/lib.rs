@@ -1657,7 +1657,7 @@ mod tests {
                 trail_refresh_rate: 40,
                 enable_always_trail: false,
                 apply_curve_draw: false,
-                enable_middle_click_trigger: false,
+                enable_middle_click_trigger: true,
                 click_trigger: Left,
                 hide_in_fullscreen: true,
                 show_on_desktop: true,
@@ -2766,7 +2766,7 @@ mod tests {
         assert_eq!(ce.trail_refresh_rate, 40);
         assert!(!ce.enable_always_trail);
         assert!(!ce.apply_curve_draw);
-        assert!(!ce.enable_middle_click_trigger);
+        assert!(ce.enable_middle_click_trigger);
         assert_eq!(ce.click_trigger, ClickTriggerType::Left);
         assert!(ce.hide_in_fullscreen);
         assert!(ce.show_on_desktop);

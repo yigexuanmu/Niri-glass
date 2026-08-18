@@ -3541,14 +3541,30 @@ impl State {
             if ButtonState::Pressed == button_state {
                 if ce.enabled && ce.click_trigger.accepts(is_left, is_right) {
                     ce.is_down = true;
+                    // 左键蓝色、右键浅红：用对应按键的爆裂颜色。
+                    if is_right {
+                        ce.color = ce.color_right;
+                        ce.rings_end_color =
+                            crate::cursor_effect::state::rings_end_color_from_rgb(ce.color_right);
+                    } else {
+                        ce.color = ce.color_left;
+                        ce.rings_end_color =
+                            crate::cursor_effect::state::rings_end_color_from_rgb(ce.color_left);
+                    }
                     ce.create_effects(gx, gy, &mut crate::cursor_effect::state::FastrandRng);
                     ce.last_pos = Some((gx, gy));
                 } else if ce.enabled && is_middle && ce.middle_click_trigger {
+                    // 中键浅黄。
+                    ce.color = ce.color_middle;
+                    ce.rings_end_color =
+                        crate::cursor_effect::state::rings_end_color_from_rgb(ce.color_middle);
+                    ce.is_down = true; // 中键长按也出拖尾
                     ce.create_effects(gx, gy, &mut crate::cursor_effect::state::FastrandRng);
+                    ce.last_pos = Some((gx, gy));
                 }
             } else {
                 // button released (including left/right on a Both trigger)
-                if is_left || is_right {
+                if is_left || is_right || is_middle {
                     ce.is_down = false;
                 }
             }
