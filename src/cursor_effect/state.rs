@@ -308,10 +308,29 @@ impl CursorEffectState {
             self.last_pos = Some(p);
             return;
         };
-        let d = ((p.0 - prev.0).powi(2) + (p.1 - prev.1).powi(2)).sqrt();
+        self.last_pos = Some(p);
+
+        // 拖尾采样参考点 = 已入队的最后一个点（trail 为空时退回 last_pos）。
+        // 这样拖尾点沿路径保持 ~2px 间距，与指针事件采样率无关。若以"单个事件"
+        // 的 last_pos 为参考，高轮询率鼠标快速晃动时单事件位移常 <2px（转向点
+        // 附近速度低），导致只在高速过中点附近 push 点、转向点处断档 → 点聚集
+        // 在中点而头在极值 → 拖尾退化成"锁定鼠标"的笔直直线；同时点稀疏 → 折线
+        // 以长直线弦连接采样点，快速曲线运动下锯齿明显。
+        let (rx, ry) = self.trail.back().map(|tp| (tp.x, tp.y)).unwrap_or(prev);
+        let d = ((p.0 - rx).powi(2) + (p.1 - ry).powi(2)).sqrt();
         if d > 2.0 {
-            self.trail.push_back(TrailPoint { x: p.0, y: p.1, life: 1.0 });
-            if self.trail.len() > self.max_trail {
+            // 对移动段按 ~2px 细分，即使单事件大跳变也生成密集折线点，保证拖尾
+            // 沿真实路径平滑跟踪曲线（消除长弦带来的锯齿）。
+            let steps = ((d / 2.0).ceil().max(1.0)) as usize;
+            for k in 1..=steps {
+                let t = k as f32 / steps as f32;
+                self.trail.push_back(TrailPoint {
+                    x: rx + (p.0 - rx) * t,
+                    y: ry + (p.1 - ry) * t,
+                    life: 1.0,
+                });
+            }
+            while self.trail.len() > self.max_trail {
                 self.trail.pop_front();
             }
             if rng.f32() < 0.3 {
@@ -527,8 +546,56 @@ mod tests {
         assert!(s.trail.is_empty());
         s.is_down = true;
         s.on_move(10.0, 10.0, now, &mut rng); // last_pos 先被设
-        s.on_move(60.0, 60.0, now, &mut rng); // 距离 70>2 → push
-        assert_eq!(s.trail.len(), 1);
+        s.on_move(60.0, 60.0, now, &mut rng); // 距离 70>2 → 沿段 ~2px 细分采样
+        assert!(!s.trail.is_empty());
+        // 拖尾点应密集覆盖 (10,10)→(60,60) 段并裁剪到 max_trail
+        assert_eq!(s.trail.len(), s.max_trail);
+        let last = s.trail.back().unwrap();
+        assert!((last.x - 60.0).abs() < 1e-3 && (last.y - 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn trail_dense_sampling_follows_fast_shake_path() {
+        // 回归：快速晃动鼠标时拖尾退化成"锁定鼠标"的笔直直线。
+        // 高轮询率鼠标单事件位移常 <2px（转向点附近速度低），若以单事件 last_pos
+        // 为参考，转向点附近几乎不采样 → 点聚集在中点而头在极值 → 成直线。
+        // 修复：参考点改为 trail.back()（已入队最后一点）+ ~2px 细分，路径上保持
+        // 密集采样。
+        let mut s = CursorEffectState::new();
+        let mut rng = SequentialRng::new(&[0.5; 64]);
+        let now = Instant::now();
+        s.is_down = true;
+        s.on_move(0.0, 0.0, now, &mut rng); // 初始化 last_pos
+        s.on_move(40.0, 0.0, now, &mut rng); // 快速段建立拖尾（参考点=trail.back()）
+        assert!(!s.trail.is_empty());
+        let mut x = 40.0;
+        let mut dir = -1.0;
+        let mut final_x = x;
+        for _ in 0..400 {
+            x += dir;
+            if x < -40.0 {
+                dir = 1.0;
+            }
+            if x > 40.0 {
+                dir = -1.0;
+            }
+            final_x = x;
+            s.on_move(x, 0.0, now, &mut rng); // 之后每事件仅 1px（高轮询率）
+        }
+        assert!(!s.trail.is_empty());
+        let xs: Vec<f32> = s.trail.iter().map(|p| p.x).collect();
+        for w in xs.windows(2) {
+            assert!(
+                (w[1] - w[0]).abs() <= 3.0 + 1e-3,
+                "trail gap too large: {xs:?}"
+            );
+        }
+        // 拖尾必须跟随晃动前进，而非卡在起点 seed 成一条直线
+        let back = s.trail.back().unwrap().x;
+        assert!(
+            (back - final_x).abs() <= 3.0 + 1e-3,
+            "trail stuck at seed (straight-line bug), back={back}, final={final_x}"
+        );
     }
 
     #[test]
