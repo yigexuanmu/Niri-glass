@@ -95,6 +95,10 @@ pub struct Wave {
     /// 每次点击随机生成的种子：让环/圆盘每个字符的速度、半径、淡出时间
     /// 每次点击都不同（否则由弧位置 k 派生 → 每次点击几乎一样）。
     pub seed: u64,
+    /// 爆裂颜色（创建时快照，避免被后续点击的按键颜色覆盖）。
+    pub color: [f32; 3],
+    /// 环的末端颜色（创建时快照）。
+    pub rings_end_color: [f32; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +113,8 @@ pub struct Fragment {
     pub a: f32,
     pub f: f32,
     pub from_click: bool,
+    /// 颜色快照（创建时），保证不同按键的爆裂/拖尾可同时渲染。
+    pub color: [f32; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,6 +125,8 @@ pub struct TrailPoint {
     /// 稳定标识（创建时递增分配），用作字符闪烁的随机种子——保证字符只在
     /// 寿命期内的固定时间点变化，而不是随队列 index 位移而抖动。
     pub id: u64,
+    /// 颜色快照（创建时），让旧拖尾保持原按键颜色。
+    pub color: [f32; 3],
 }
 
 /// BASpark ClickTriggerType（ConfigManager.cs:89）：0=左, 1=右, 2=左右。
@@ -148,7 +156,6 @@ pub struct CursorEffectState {
     pub color_right: [u8; 3],
     /// 中键点击的爆裂颜色（浅黄）。
     pub color_middle: [u8; 3],
-    pub rings_start_color: [f32; 3],
     pub rings_end_color: [f32; 3],
     pub scale: f32,
     pub opacity: f32,
@@ -194,7 +201,6 @@ impl CursorEffectState {
             color_left: color,
             color_right: [255, 150, 150],  // 浅红（右键）
             color_middle: [255, 235, 150], // 浅黄（中键）
-            rings_start_color: [250.0, 252.0, 252.0], // index.html:76
             rings_end_color: rings_end_color_from_rgb(color), // index.html:77
             scale: 1.5,      // EffectScale
             opacity: 1.0,    // EffectOpacity
@@ -244,14 +250,26 @@ impl CursorEffectState {
         (2.0 - (4.0 * (t - 0.5)).abs()).min(1.0)
     }
 
-    /// BASpark index.html:419-426  ringRgbAt(r): 在 ringsStart→ringsEnd 插值，t = min(1.2*r,1)
-    pub fn ring_rgb_at(&self, r_prog: f32) -> [f32; 3] {
+    /// BASpark index.html:419-426  ringRgbAt(r): 在 ringsStart→ringsEnd 插值，t = min(1.2*r,1)。
+    /// 使用给定的末端颜色（per-wave 快照）。
+    pub fn ring_rgb_at_with(end: [f32; 3], r_prog: f32) -> [f32; 3] {
         let t = (1.2 * r_prog).min(1.0);
+        let start = [250.0, 252.0, 252.0];
         let lerp = |s: f32, e: f32| (s * (1.0 - t) + e * t).round();
         [
-            lerp(self.rings_start_color[0], self.rings_end_color[0]),
-            lerp(self.rings_start_color[1], self.rings_end_color[1]),
-            lerp(self.rings_start_color[2], self.rings_end_color[2]),
+            lerp(start[0], end[0]),
+            lerp(start[1], end[1]),
+            lerp(start[2], end[2]),
+        ]
+    }
+
+    /// 当前全局颜色归一化到 [0,1]，用于在创建时给实体打颜色快照。
+    #[inline]
+    pub fn color_norm(&self) -> [f32; 3] {
+        [
+            self.color[0] as f32 / 255.0,
+            self.color[1] as f32 / 255.0,
+            self.color[2] as f32 / 255.0,
         ]
     }
 
@@ -290,6 +308,8 @@ impl CursorEffectState {
             r: 0.0,
             life: 0.0,
             seed: wave_seed,
+            color: self.color_norm(),
+            rings_end_color: self.rings_end_color,
             ring: Ring {
                 ang: rng.f32() * TAU,
                 rs: pick(rng, &create_click_cfg::RINGS_RS_LIST),
@@ -322,6 +342,7 @@ impl CursorEffectState {
                 a: 1.0,
                 f: 0.9,
                 from_click: true,
+                color: self.color_norm(),
             });
         }
     }
@@ -359,6 +380,7 @@ impl CursorEffectState {
                     y: ry + (p.1 - ry) * t,
                     life: 1.0,
                     id: self.trail_serial,
+                    color: self.color_norm(),
                 });
             }
             while self.trail.len() > self.max_trail {
@@ -378,6 +400,7 @@ impl CursorEffectState {
                     a: 0.7,
                     f: 0.95,
                     from_click: false,
+                    color: self.color_norm(),
                 });
             }
         }

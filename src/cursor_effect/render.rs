@@ -570,11 +570,6 @@ fn collect_glyph_elements(
     };
 
     let opacity = state.opacity;
-    let fill_color = [
-        state.color[0] as f32 / 255.0,
-        state.color[1] as f32 / 255.0,
-        state.color[2] as f32 / 255.0,
-    ];
 
     // ─── Waves: filledCircle + rings → 字符（BASpark `_updateWaves`） ───
     for (wi, w) in state.waves.iter().enumerate() {
@@ -628,7 +623,7 @@ fn collect_glyph_elements(
                         sz,
                         glyph_for(seed_c),
                         0.0,
-                        fill_color,
+                        w.color,
                         alpha_c,
                         output_loc,
                         scale,
@@ -640,7 +635,7 @@ fn collect_glyph_elements(
         }
 
         let ring_alpha = state.ring_alpha(ring_fade);
-        let ring_rgb = state.ring_rgb_at(ring_prog);
+        let ring_rgb = state::CursorEffectState::ring_rgb_at_with(w.rings_end_color, ring_prog);
         if ring_alpha <= 0.0 {
             continue;
         }
@@ -761,7 +756,7 @@ fn collect_glyph_elements(
             9.0,
             glyph_for(p.id as usize),
             0.0,
-            fill_color,
+            p.color,
             alpha,
             output_loc,
             scale,
@@ -775,7 +770,7 @@ fn collect_glyph_elements(
             11.0,
             glyph_for(12345),
             0.0,
-            fill_color,
+            state.color_norm(),
             1.0,
             output_loc,
             scale,
@@ -829,7 +824,7 @@ fn collect_geometric_elements(
             out.push(CursorEffectElement::filled_circle(
                 Point::from((w.x as f64, w.y as f64)),
                 fill_r,
-                fill_color,
+                w.color,
                 fill_alpha,
                 output_loc,
                 scale,
@@ -842,7 +837,7 @@ fn collect_geometric_elements(
         // B2: BASpark ring `strokeStyle = rgba(rr,gg,bb,alphaRing)` 不走 `this.alpha()`
         //（index.html:469-469），即不乘 opacity —— 只有 filledCircle/sparks 乘 opacity。
         let ring_alpha = state.ring_alpha(ring_fade);
-        let ring_rgb = state.ring_rgb_at(ring_prog);
+        let ring_rgb = state::CursorEffectState::ring_rgb_at_with(w.rings_end_color, ring_prog);
         let line_width_mul = (-0.8 * (ring_fade - 0.8) + 1.0).min(1.0); // index.html:462
         if ring_alpha <= 0.0 || line_width_mul <= 0.0 {
             continue;
