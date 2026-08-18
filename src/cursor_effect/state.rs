@@ -475,7 +475,9 @@ impl CursorEffectState {
                 s.vx *= s.f.powf(fs); // index.html:502
                 s.vy *= s.f.powf(fs);
                 s.rot += s.rs * fs; // index.html:504
-                s.a -= 0.020 * fs; // index.html:505
+                // 拖尾产生的火花（from_click=false）消失更慢（减半）。
+                let a_decay = if s.from_click { 0.020 } else { 0.010 };
+                s.a -= a_decay * fs; // index.html:505
                 s.a <= 0.0
             };
             if recycle {
