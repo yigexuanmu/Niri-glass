@@ -18,6 +18,9 @@ pub struct Shaders {
     pub resize: Option<ShaderProgram>,
     pub gradient_fade: Option<GlesTexProgram>,
     pub blur: Option<BlurProgram>,
+    /// 光标特效（1:1 BASpark 复刻）shader，codename `cursor_effect`。
+    /// 必须在 struct 里独立存，不像 custom_resize/close/open 那种被外部覆盖，
+    /// 因为它完全由本 crate 的 `cursor_effect::render` 使用。
     pub cursor_effect: Option<ShaderProgram>,
     pub custom_resize: RefCell<Option<ShaderProgram>>,
     pub custom_close: RefCell<Option<ShaderProgram>>,
@@ -31,6 +34,7 @@ pub enum ProgramType {
     Resize,
     Close,
     Open,
+    /// 光标特效（BASpark 复刻）；fragment shader 在 `shaders/cursor_effect.frag`。
     CursorEffect,
 }
 
@@ -99,6 +103,35 @@ impl Shaders {
                     UniformName::new("geo_size", UniformType::_2f),
                     UniformName::new("corner_radius", UniformType::_4f),
                     UniformName::new("input_to_geo", UniformType::Matrix3x3),
+                    UniformName::new("lg_refraction_strength", UniformType::_1f),
+                    UniformName::new("lg_power_factor", UniformType::_1f),
+                    UniformName::new("lg_refraction_a", UniformType::_1f),
+                    UniformName::new("lg_refraction_b", UniformType::_1f),
+                    UniformName::new("lg_refraction_c", UniformType::_1f),
+                    UniformName::new("lg_refraction_d", UniformType::_1f),
+                    UniformName::new("lg_refraction_power", UniformType::_1f),
+                    UniformName::new("lg_physical_refraction", UniformType::_1f),
+                    UniformName::new("lg_glow_weight", UniformType::_1f),
+                    UniformName::new("lg_glow_bias", UniformType::_1f),
+                    UniformName::new("lg_glow_edge0", UniformType::_1f),
+                    UniformName::new("lg_glow_edge1", UniformType::_1f),
+                    UniformName::new("lg_edge_lighting", UniformType::_1f),
+                    UniformName::new("lg_fringing", UniformType::_1f),
+                    UniformName::new("lg_refraction_dilute", UniformType::_1f),
+                    UniformName::new("lg_dilute_strength", UniformType::_1f),
+                    UniformName::new("lg_dilute_fringing", UniformType::_1f),
+                    UniformName::new("lg_dilute_strength", UniformType::_1f),
+                    UniformName::new("lg_dilute_fringing", UniformType::_1f),
+                    UniformName::new("lg_physical_refraction", UniformType::_1f),
+                    UniformName::new("lg_lens_distortion", UniformType::_1f),
+                    UniformName::new("lg_brightness", UniformType::_1f),
+                    UniformName::new("lg_contrast", UniformType::_1f),
+                    UniformName::new("lg_saturation", UniformType::_1f),
+                    UniformName::new("lg_vibrancy", UniformType::_1f),
+                    UniformName::new("lg_adaptive_dim", UniformType::_1f),
+                    UniformName::new("lg_adaptive_boost", UniformType::_1f),
+                    UniformName::new("lg_edge_thickness", UniformType::_1f),
+                    UniformName::new("lg_padding_pixels", UniformType::_1f),
                 ],
             )
             .map_err(|err| {
@@ -121,6 +154,35 @@ impl Shaders {
                     UniformName::new("noise", UniformType::_1f),
                     UniformName::new("saturation", UniformType::_1f),
                     UniformName::new("bg_color", UniformType::_4f),
+                    UniformName::new("lg_refraction_strength", UniformType::_1f),
+                    UniformName::new("lg_power_factor", UniformType::_1f),
+                    UniformName::new("lg_refraction_a", UniformType::_1f),
+                    UniformName::new("lg_refraction_b", UniformType::_1f),
+                    UniformName::new("lg_refraction_c", UniformType::_1f),
+                    UniformName::new("lg_refraction_d", UniformType::_1f),
+                    UniformName::new("lg_refraction_power", UniformType::_1f),
+                    UniformName::new("lg_physical_refraction", UniformType::_1f),
+                    UniformName::new("lg_glow_weight", UniformType::_1f),
+                    UniformName::new("lg_glow_bias", UniformType::_1f),
+                    UniformName::new("lg_glow_edge0", UniformType::_1f),
+                    UniformName::new("lg_glow_edge1", UniformType::_1f),
+                    UniformName::new("lg_edge_lighting", UniformType::_1f),
+                    UniformName::new("lg_fringing", UniformType::_1f),
+                    UniformName::new("lg_refraction_dilute", UniformType::_1f),
+                    UniformName::new("lg_dilute_strength", UniformType::_1f),
+                    UniformName::new("lg_dilute_fringing", UniformType::_1f),
+                    UniformName::new("lg_dilute_strength", UniformType::_1f),
+                    UniformName::new("lg_dilute_fringing", UniformType::_1f),
+                    UniformName::new("lg_physical_refraction", UniformType::_1f),
+                    UniformName::new("lg_lens_distortion", UniformType::_1f),
+                    UniformName::new("lg_brightness", UniformType::_1f),
+                    UniformName::new("lg_contrast", UniformType::_1f),
+                    UniformName::new("lg_saturation", UniformType::_1f),
+                    UniformName::new("lg_vibrancy", UniformType::_1f),
+                    UniformName::new("lg_adaptive_dim", UniformType::_1f),
+                    UniformName::new("lg_adaptive_boost", UniformType::_1f),
+                    UniformName::new("lg_edge_thickness", UniformType::_1f),
+                    UniformName::new("lg_padding_pixels", UniformType::_1f),
                 ],
             )
             .map_err(|err| {
@@ -150,26 +212,39 @@ impl Shaders {
             })
             .ok();
 
+        // 光标特效 (1:1 BASpark 复刻) shader。重要：必须在 `additional_uniforms` 注册
+        // frag 里用到的所有 uniform（包括 `u_trail_count` + `u_trail_pts[0..MAX_TRAIL_PTS]`），
+        // 否则 smithay 在 draw 时查不到 location → `UnknownUniform` panic。与 frag 的
+        // `const int MAX_TRAIL_PTS = 128` + render.rs 的 `const MAX_TRAIL_PTS: usize = 128` 对齐。
+        const CURSOR_EFFECT_MAX_TRAIL_PTS: usize = 128;
+        let mut cursor_effect_uniforms: Vec<UniformName> = vec![
+            UniformName::new("input_to_geo", UniformType::Matrix3x3),
+            UniformName::new("geo_size", UniformType::_2f),
+            UniformName::new("u_mode", UniformType::_1f),
+            UniformName::new("u_color", UniformType::_3f),
+            UniformName::new("u_center", UniformType::_2f),
+            UniformName::new("u_radius", UniformType::_1f),
+            UniformName::new("u_inner_w", UniformType::_1f),
+            UniformName::new("u_aa", UniformType::_1f),
+            UniformName::new("u_a0", UniformType::_1f),
+            UniformName::new("u_a1", UniformType::_1f),
+            UniformName::new("u_p0", UniformType::_2f),
+            UniformName::new("u_p1", UniformType::_2f),
+            UniformName::new("u_p2", UniformType::_2f),
+            UniformName::new("u_trail_a0", UniformType::_1f),
+            UniformName::new("u_trail_a1", UniformType::_1f),
+            UniformName::new("u_trail_count", UniformType::_1f),
+        ];
+        for i in 0..CURSOR_EFFECT_MAX_TRAIL_PTS {
+            cursor_effect_uniforms.push(UniformName::new(
+                format!("u_trail_pts[{i}]"),
+                UniformType::_2f,
+            ));
+        }
         let cursor_effect = ShaderProgram::compile(
             renderer,
             include_str!("cursor_effect.frag"),
-            &[
-                UniformName::new("input_to_geo", UniformType::Matrix3x3),
-                UniformName::new("geo_size", UniformType::_2f),
-                UniformName::new("u_mode", UniformType::_1f),
-                UniformName::new("u_color", UniformType::_3f),
-                UniformName::new("u_center", UniformType::_2f),
-                UniformName::new("u_radius", UniformType::_1f),
-                UniformName::new("u_inner_w", UniformType::_1f),
-                UniformName::new("u_aa", UniformType::_1f),
-                UniformName::new("u_a0", UniformType::_1f),
-                UniformName::new("u_a1", UniformType::_1f),
-                UniformName::new("u_p0", UniformType::_2f),
-                UniformName::new("u_p1", UniformType::_2f),
-                UniformName::new("u_p2", UniformType::_2f),
-                UniformName::new("u_trail_a0", UniformType::_1f),
-                UniformName::new("u_trail_a1", UniformType::_1f),
-            ],
+            &cursor_effect_uniforms,
             &[],
         )
         .map_err(|err| {

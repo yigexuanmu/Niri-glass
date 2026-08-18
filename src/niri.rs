@@ -412,7 +412,6 @@ pub struct Niri {
     pub mods_with_finger_scroll_binds: HashSet<Modifiers>,
     pub pending_modifier_bind: Option<PendingModifierBind>,
     pub completed_modifier_bind: Option<Bind>,
-    pub pending_default_mod_tap: Option<Keycode>,
 
     pub lock_state: LockState,
 
@@ -1633,7 +1632,6 @@ impl State {
                 mods_with_finger_scroll_binds(new_mod_key, &config.binds);
             self.niri.pending_modifier_bind = None;
             self.niri.completed_modifier_bind = None;
-            self.niri.pending_default_mod_tap = None;
         }
 
         if config.window_rules != old_config.window_rules {
@@ -3299,7 +3297,6 @@ impl Niri {
             mods_with_finger_scroll_binds,
             pending_modifier_bind: None,
             completed_modifier_bind: None,
-            pending_default_mod_tap: None,
 
             lock_state: LockState::Unlocked,
             locked_hint: None,

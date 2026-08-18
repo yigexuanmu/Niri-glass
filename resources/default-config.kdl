@@ -368,11 +368,6 @@ grid-overview {
 
     // Scale the focused column relative to its cell. Ranges from 1 to 2.
     focused-column-scale 1.04
-
-    // When true (the default), tapping the Mod key alone (press and release without
-    // pressing any other key) toggles the grid overview, even without an explicit binding.
-    // Set to false to disable this built-in behavior.
-    // default-mod-action false
 }
 
 // Fullscreen magnifier settings.
@@ -498,6 +493,7 @@ binds {
 
     // Tap Mod (press and release without pressing any other key in between)
     // to toggle the grid overview: a view of all windows on the current workspaces.
+    // Like the magnifier, this only works when the binding is present in this section.
     Mod repeat=false { toggle-grid-overview; }
 
     // Toggle the fullscreen magnifier on or off.
