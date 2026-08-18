@@ -125,15 +125,18 @@ impl CursorEffectElement {
     ) -> Self {
         let (lx, ly) = Self::local(center_global, output_loc);
         let r = radius_px.max(0.5) as f64;
-        let size = Size::from((r * 2., r * 2.));
-        let loc = Point::from((lx - r, ly - r));
+        // AA 抗锯齿：quad 必须在形状外再包住 aa 半径，否则 shader 的 1px 软边
+        // 在 quad 边界（圆的四个轴向点）被裁剪成硬边，出现尖角/锯齿。
+        let rc = r + aa as f64;
+        let size = Size::from((rc * 2., rc * 2.));
+        let loc = Point::from((lx - rc, ly - rc));
         Self::build(
             size,
             loc,
             Params {
                 mode: 0.0,
                 color,
-                center: [r as f32, r as f32],
+                center: [rc as f32, rc as f32],
                 radius: r as f32,
                 inner_w: 0.0,
                 aa,
@@ -207,19 +210,23 @@ impl CursorEffectElement {
     ) -> Self {
         let (lx, ly) = Self::local(center_global, output_loc);
         let s = side.max(0.5) as f64;
-        let size = Size::from((s * 2., s * 2.));
-        let loc = Point::from((lx - s, ly - s));
+        // AA 抗锯齿：quad 外扩 aa，三角形顶点按原半径 s 计算（顶点离 quad 边留出
+        // 软边），避免三角形尖端被 quad 裁剪成硬边。
+        let rc = s + aa as f64;
+        let size = Size::from((rc * 2., rc * 2.));
+        let loc = Point::from((lx - rc, ly - rc));
 
-        // 三顶点（相对 quad 中心 (s,s)，先旋转再平移）。
+        // 三顶点（相对 quad 中心 (rc,rc)，先旋转再平移）。
         // BASpark ctx.translate(cx, cy); ctx.rotate(rot); moveTo/lineTo (0,-s)/(0.6s,0.6s)/(-0.6s,0.6s).
         let (cosr, sinr) = (rot.cos(), rot.sin());
         let rot2 = |x: f32, y: f32| -> [f32; 2] {
             [cosr * x - sinr * y, sinr * x + cosr * y]
         };
-        let ctr = s as f32;
-        let v0 = rot2(0.0, -ctr);
-        let v1 = rot2(ctr * 0.6, ctr * 0.6);
-        let v2 = rot2(-ctr * 0.6, ctr * 0.6);
+        let ctr = rc as f32;
+        let sf = s as f32;
+        let v0 = rot2(0.0, -sf);
+        let v1 = rot2(sf * 0.6, sf * 0.6);
+        let v2 = rot2(-sf * 0.6, sf * 0.6);
         let p0 = [ctr + v0[0], ctr + v0[1]];
         let p1 = [ctr + v1[0], ctr + v1[1]];
         let p2 = [ctr + v2[0], ctr + v2[1]];
