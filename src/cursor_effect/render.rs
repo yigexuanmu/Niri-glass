@@ -11,6 +11,7 @@
 //! 没有 `input_to_geo`，SDF 会全部命中，整个 quad 亮成方块（即原本的 bug 1）。
 
 use std::collections::HashMap;
+use std::f32::consts::TAU;
 use std::rc::Rc;
 
 use glam::{Mat3, Vec2};
@@ -26,6 +27,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, T
 
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::cursor_effect::glyphs;
+use crate::cursor_effect::state::hash_unit;
 use crate::render_helpers::renderer::{AsGlesFrame as _, NiriRenderer};
 use crate::render_helpers::shader_element::ShaderRenderElement;
 use crate::render_helpers::shaders::{mat3_uniform, ProgramType, Shaders};
@@ -514,15 +516,6 @@ fn weight_prop(t: f32) -> f32 {
 /// 全部粒子（点击爆裂/外圈/火花/拖尾）渲染为随机代码字符（a-z/A-Z/数字/符号，
 /// 稳定伪随机数 [0,1)：同一 seed 恒返回同一值（字符生命周期内恒定），
 /// 用于给每个字符派生独立的速度/半径/大小/淡出时间 → 不规则运动与消失。
-fn hash_unit(seed: usize) -> f32 {
-    let mut h = (seed as u64).wrapping_mul(0x9E3779B97F4A7C15);
-    h ^= h >> 30;
-    h = h.wrapping_mul(0xBF58476D1CE4E5B9);
-    h ^= h >> 27;
-    h = h.wrapping_mul(0x94D049BB133111EB);
-    h ^= h >> 31;
-    ((h & 0xFF_FFFF) as f32) / 16_777_216.0
-}
 
 /// 字符模式：全部粒子替换为代码字符（`glyphs.rs`），每 ~200ms 换一次字形
 /// （`glyph_for` 相位打散，各字符在不同时刻闪烁）。
@@ -727,7 +720,7 @@ fn collect_glyph_elements(
             (s.s * 1.3).max(6.0),
             glyph_for(5000 + si),
             s.rot,
-            [1.0, 1.0, 1.0],
+            s.color,
             alpha,
             output_loc,
             scale,
@@ -777,6 +770,43 @@ fn collect_glyph_elements(
             aa,
             atlas,
         ));
+    }
+
+    // ─── ScrollRings: 滚轮代码圆环（下滚淡橙顺时针 / 上滚淡绿逆时针） ───
+    // 滚动中整环转动；停止滚动后按 idle 逐个字符不规则淡出（类似点击爆裂环）。
+    for (ri, r) in state.scroll_rings.iter().enumerate() {
+        let rad = state::scroll_cfg::RADIUS * (state.scale / 1.5);
+        let p = ((r.idle as f32 - state::scroll_cfg::GRACE_FRAMES as f32)
+            / state::scroll_cfg::FADE_FRAMES)
+            .clamp(0.0, 1.0);
+        for k in 0..state::scroll_cfg::CHARS {
+            let seed_c = (r.seed as usize) ^ (90000 + ri * 4096 + k);
+            // 每字符独立淡出窗口（起点 0..0.35、终点 0.45..1.0）→ 逐个消失。
+            let fade_start_c = hash_unit(seed_c ^ 0xA11) * 0.35;
+            let fade_end_c = 0.45 + hash_unit(seed_c ^ 0xB22) * 0.55;
+            let fa = ((p - fade_start_c) / (fade_end_c - fade_start_c)).clamp(0.0, 1.0);
+            let alpha = (1.0 - fa) * opacity;
+            if alpha <= 0.0 {
+                continue;
+            }
+            let base = k as f32 / state::scroll_cfg::CHARS as f32 * TAU;
+            let a = base + r.ang;
+            let px = r.x + a.cos() * rad;
+            let py = r.y + a.sin() * rad;
+            let sz = 10.0 + hash_unit(seed_c ^ 0xC33) * 4.0;
+            out.push(CursorEffectElement::glyph(
+                Point::from((px as f64, py as f64)),
+                sz,
+                glyph_for(seed_c),
+                0.0,
+                r.color,
+                alpha,
+                output_loc,
+                scale,
+                aa,
+                atlas,
+            ));
+        }
     }
 
     out

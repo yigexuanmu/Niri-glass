@@ -3732,6 +3732,17 @@ impl State {
                 }
 
                 let vertical = vertical_amount_v120.unwrap_or(0.);
+                // 触发更灵敏：任何垂直滚轮位移都喂给特效（不等整档 tick 才出现），
+                // 旋转角按滚轮位移量比例注入 → 转得快慢跟随滚轮快慢。
+                if vertical != 0.0 {
+                    let loc = pointer.current_location();
+                    self.niri.cursor_effect.on_scroll(
+                        loc.x as f32,
+                        loc.y as f32,
+                        vertical as f32,
+                        &mut crate::cursor_effect::state::FastrandRng,
+                    );
+                }
                 let ticks = self.niri.vertical_wheel_tracker.accumulate(vertical);
                 if ticks != 0 {
                     let (bind_up, bind_down) = if should_handle_in_overview && modifiers.is_empty()
@@ -3850,6 +3861,17 @@ impl State {
 
                 return;
             } else {
+                // 无滚轮 bind 命中（should_handle=false）：也喂给光标特效，否则没绑定时不出现。
+                let vertical = vertical_amount_v120.unwrap_or(0.);
+                if vertical != 0.0 {
+                    let loc = pointer.current_location();
+                    self.niri.cursor_effect.on_scroll(
+                        loc.x as f32,
+                        loc.y as f32,
+                        vertical as f32,
+                        &mut crate::cursor_effect::state::FastrandRng,
+                    );
+                }
                 self.niri.horizontal_wheel_tracker.reset();
                 self.niri.vertical_wheel_tracker.reset();
             }

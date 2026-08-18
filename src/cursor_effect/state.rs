@@ -47,6 +47,33 @@ pub mod create_click_cfg {
     pub const SPARKS_COUNT: usize = 8;
 }
 
+/// 滚轮代码圆环配置（自定义，非 BASpark）。
+pub mod scroll_cfg {
+    /// 圆环半径（scale=1.5 时），渲染时按 scale/1.5 缩放。
+    pub const RADIUS: f32 = 62.0;
+    /// 圆环字符数。
+    pub const CHARS: usize = 22;
+    /// 每整档滚轮（120 v120 单位）注入的旋转角（rad）：滚轮越快 → 单位时间
+    /// 旋转角越大，转动速度跟随滚轮速度。
+    pub const ANGLE_PER_NOTCH: f32 = 0.5;
+    /// 停止滚动后继续"惯性"旋转的帧数（逐帧递减）。
+    pub const ROT_STOP_FRAMES: u16 = 12;
+    /// 惯性旋转的最大角速度（rad/帧，随剩余帧数线性衰减）。
+    pub const COAST_ANGLE: f32 = 0.12;
+    /// 停止滚动后保持满亮的帧数，随后开始逐个淡出。
+    pub const GRACE_FRAMES: u16 = 14;
+    /// 淡出窗口（帧数）：`GRACE_FRAMES` 之后在这个窗口内逐个消失。
+    pub const FADE_FRAMES: f32 = 52.0;
+    /// 同时存在的环数量上限（滚动极快时兜底）。
+    pub const MAX_RINGS: usize = 6;
+    /// 与已有环"合并刷新"的最大距离（px）：同向且相近 → 延续同一条环。
+    pub const MERGE_DIST: f32 = 60.0;
+    /// 下滚（顺时针）淡橙。
+    pub const COLOR_DOWN: [f32; 3] = [1.0, 190.0 / 255.0, 118.0 / 255.0];
+    /// 上滚（逆时针）淡绿。
+    pub const COLOR_UP: [f32; 3] = [158.0 / 255.0, 1.0, 150.0 / 255.0];
+}
+
 /// BASpark index.html:66-68  animationLoops 帧率归一参数
 pub const BASE_FRAME_MS: f32 = 1000.0 / 60.0;
 pub const MAX_DELTA_MS: f32 = 100.0;
@@ -57,6 +84,18 @@ pub const MAX_DELTA_MS: f32 = 100.0;
 pub trait EffectRng {
     /// 返回 [0, 1) 的 f32。
     fn f32(&mut self) -> f32;
+}
+
+/// 稳定伪随机数 [0,1)：同一 seed 恒返回同一值（实体生命周期内恒定），
+/// 用于给每个字符/火花派生独立的速度/半径/大小/淡出时间 → 不规则运动与消失。
+pub fn hash_unit(seed: usize) -> f32 {
+    let mut h = (seed as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xBF58476D1CE4E5B9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94D049BB133111EB);
+    h ^= h >> 31;
+    ((h & 0xFF_FFFF) as f32) / 16_777_216.0
 }
 
 /// 生产随机源：基于 fastrand（niri 已依赖 fastrand 2.4.1）。
@@ -129,6 +168,26 @@ pub struct TrailPoint {
     pub color: [f32; 3],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollRing {
+    pub x: f32,
+    pub y: f32,
+    /// 旋转方向：+1 顺时针（滚轮向下，淡橙），-1 逆时针（滚轮向上，淡绿）。
+    pub dir: f32,
+    /// 颜色快照（创建时按方向固定）。
+    pub color: [f32; 3],
+    /// 累计旋转角（rad）。由滚轮位移注入，停止滚动后短暂惯性衰减。
+    pub ang: f32,
+    /// 上一帧的 `ang` 快照：差值 = 本帧扫过的角 → 决定甩出火花的力度。
+    pub last_ang: f32,
+    /// 自上次滚动 tick 以来的帧数；滚动 tick 会归零刷新。
+    pub idle: u16,
+    /// 随机种子（外观：字符淡出窗口、大小）。
+    pub seed: u64,
+    /// 甩出火花计数器（确定性伪随机用）。
+    pub spark_sn: u64,
+}
+
 /// BASpark ClickTriggerType（ConfigManager.cs:89）：0=左, 1=右, 2=左右。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickTrigger {
@@ -174,6 +233,7 @@ pub struct CursorEffectState {
     pub waves: Vec<Wave>,
     pub sparks: Vec<Fragment>,
     pub trail: VecDeque<TrailPoint>,
+    pub scroll_rings: Vec<ScrollRing>,
     pub last_pos: Option<(f32, f32)>,
     pub is_down: bool,
     pub last_frame_time: Instant,
@@ -218,6 +278,7 @@ impl CursorEffectState {
             waves: Vec::with_capacity(8),
             sparks: Vec::with_capacity(32),
             trail: VecDeque::with_capacity(16),
+            scroll_rings: Vec::with_capacity(4),
             last_pos: None,
             is_down: false,
             last_frame_time: now,
@@ -239,6 +300,7 @@ impl CursorEffectState {
         self.waves.clear();
         self.sparks.clear();
         self.trail.clear();
+        self.scroll_rings.clear();
         self.is_down = false;
         self.last_pos = None;
         self.last_frame_time = Instant::now();
@@ -413,7 +475,10 @@ impl CursorEffectState {
 impl CursorEffectState {
     /// BASpark index.html:681  hasWork：无粒子即冬眠。
     pub fn has_work(&self) -> bool {
-        !self.waves.is_empty() || !self.sparks.is_empty() || !self.trail.is_empty()
+        !self.waves.is_empty()
+            || !self.sparks.is_empty()
+            || !self.trail.is_empty()
+            || !self.scroll_rings.is_empty()
     }
 
     /// 推进一帧。返回本帧后是否仍有粒子存活（供调用方决定 redraw）。
@@ -437,6 +502,7 @@ impl CursorEffectState {
         self.update_trail(trail_fs);
         self.update_waves(click_fs);
         self.update_sparks(click_fs, trail_fs);
+        self.update_scroll_rings(base_scale);
         self.has_work()
     }
 
@@ -518,6 +584,123 @@ impl CursorEffectState {
                 i += 1;
             }
         }
+    }
+
+    /// 滚轮滚动：在光标处产生/刷新一条代码圆环。
+    ///
+    /// `amount > 0` 为滚轮向下（淡橙、顺时针），`amount < 0` 为滚轮向上（淡绿、逆时针）。
+    /// 旋转角按 `amount`（v120 单位，1 整档 = 120）比例注入 → 转动速度跟随滚轮速度。
+    /// 同方向且位置相近时刷新已有环（保持连续、不闪跳）；否则新建一条。
+    pub fn on_scroll<R: EffectRng>(&mut self, x: f32, y: f32, amount: f32, rng: &mut R) {
+        if !self.enabled || amount == 0.0 {
+            return;
+        }
+        let (dir, color) = if amount > 0.0 {
+            (1.0_f32, scroll_cfg::COLOR_DOWN)
+        } else {
+            (-1.0_f32, scroll_cfg::COLOR_UP)
+        };
+        let angle_step =
+            dir * scroll_cfg::ANGLE_PER_NOTCH * (amount.abs() / 120.0).clamp(0.0, 4.0);
+        let merged = self
+            .scroll_rings
+            .iter_mut()
+            .find(|r| r.dir == dir && (r.x - x).hypot(r.y - y) < scroll_cfg::MERGE_DIST);
+        if let Some(r) = merged {
+            r.x = x;
+            r.y = y;
+            r.idle = 0;
+            r.ang += angle_step;
+        } else {
+            let seed = ((rng.f32() as f64 * 1e9) as u64) ^ (((rng.f32() as f64 * 1e9) as u64) << 32);
+            self.scroll_rings.push(ScrollRing {
+                x,
+                y,
+                dir,
+                color,
+                ang: angle_step,
+                last_ang: 0.0,
+                idle: 0,
+                seed,
+                spark_sn: 0,
+            });
+            while self.scroll_rings.len() > scroll_cfg::MAX_RINGS {
+                self.scroll_rings.remove(0);
+            }
+        }
+    }
+
+    /// 滚动圆环逐帧推进：旋转角由滚轮注入，此处只做停止后的"惯性"旋转；
+    /// 环在可见期间始终跟随光标；随后按 GRACE_FRAMES + FADE_FRAMES 逐个淡出并回收。
+    /// 转动帧会按扫过的角度把火花沿切向"甩出去"。
+    fn update_scroll_rings(&mut self, base_scale: f32) {
+        let mut spawned: Vec<Fragment> = Vec::new();
+        let mut i = 0;
+        while i < self.scroll_rings.len() {
+            let recycle = {
+                let r = &mut self.scroll_rings[i];
+                // 可见期间跟随光标：滚动同时移动鼠标，圆环不会甩在后面。
+                if let Some((cx, cy)) = self.last_pos {
+                    r.x = cx;
+                    r.y = cy;
+                }
+                r.idle = r.idle.saturating_add(1);
+                if r.idle <= scroll_cfg::ROT_STOP_FRAMES {
+                    let f = 1.0 - r.idle as f32 / scroll_cfg::ROT_STOP_FRAMES as f32;
+                    r.ang += scroll_cfg::COAST_ANGLE * r.dir * f * base_scale;
+                }
+                // 本帧扫过的角 → 切向甩出火花（力度 ∝ 转动速度）。
+                let ds = r.ang - r.last_ang;
+                r.last_ang = r.ang;
+                if ds.abs() > 0.02 {
+                    let rad = scroll_cfg::RADIUS * (self.scale / 1.5);
+                    let n = ((ds.abs() / 0.08).round() as usize).clamp(1, 3);
+                    for _ in 0..n {
+                        r.spark_sn = r.spark_sn.wrapping_add(1);
+                        let th = hash_unit(
+                            (r.seed as usize ^ 0xDEF0) ^ (r.spark_sn as usize).wrapping_mul(7919),
+                        ) * TAU;
+                        let px = r.x + th.cos() * rad;
+                        let py = r.y + th.sin() * rad;
+                        // 切向单位向量（dir>0 顺时针）：保持 in-place 旋转方向。
+                        let tx = r.dir * (-th.sin());
+                        let ty = r.dir * th.cos();
+                        // 力度范围化：速度乘系数 0.3..1.6 分布 + 切向角度 ±0.35rad 抖动，
+                        // 让火花以不同距离和角度散开，光标周围不会空。
+                        let k = hash_unit(r.spark_sn as usize ^ 0x51) * 1.3 + 0.3;
+                        let speed = rad * ds.abs() * 0.6 * k;
+                        let jitter = (hash_unit(r.spark_sn as usize ^ 0x52) - 0.5) * 0.7;
+                        let ct = tx * jitter.cos() - ty * jitter.sin();
+                        let st = tx * jitter.sin() + ty * jitter.cos();
+                        // 向外（径向）分量也范围化：0.25..0.9 倍速度。
+                        let outward = speed
+                            * (0.25 + hash_unit(r.spark_sn as usize ^ 0x11) * 0.65);
+                        let vx = ct * speed + th.cos() * outward;
+                        let vy = st * speed + th.sin() * outward;
+                        spawned.push(Fragment {
+                            x: px,
+                            y: py,
+                            vx,
+                            vy,
+                            rot: hash_unit(r.spark_sn as usize ^ 0x22) * TAU,
+                            rs: (hash_unit(r.spark_sn as usize ^ 0x33) - 0.5) * 0.3,
+                            s: (3.0 + hash_unit(r.spark_sn as usize ^ 0x44) * 2.0) * self.scale,
+                            a: 0.85,
+                            f: 0.9,
+                            from_click: false,
+                            color: r.color,
+                        });
+                    }
+                }
+                r.idle > scroll_cfg::GRACE_FRAMES + scroll_cfg::FADE_FRAMES as u16
+            };
+            if recycle {
+                self.scroll_rings.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        self.sparks.extend(spawned);
     }
 }
 
@@ -709,6 +892,85 @@ mod tests {
         assert_eq!(s.sparks.len(), 0);
         assert_eq!(s.waves.len(), 0);
         assert!(s.trail.is_empty());
+    }
+
+    #[test]
+    fn scroll_ring_created_direction_colored_and_merges() {
+        let mut s = CursorEffectState::new();
+        let mut rng = SequentialRng::new(&[0.5; 8]);
+        s.on_scroll(0.0, 0.0, 1.0, &mut rng);
+        assert_eq!(s.scroll_rings.len(), 1);
+        assert_eq!(s.scroll_rings[0].dir, 1.0);
+        assert_eq!(s.scroll_rings[0].color, scroll_cfg::COLOR_DOWN);
+        // 同向相近 → 复用，不新增
+        s.on_scroll(2.0, 1.0, 1.0, &mut rng);
+        assert_eq!(s.scroll_rings.len(), 1, "nearby same-dir scroll reuses the ring");
+        // 反向 → 新建一条，方向相反、颜色不同
+        s.on_scroll(0.0, 0.0, -1.0, &mut rng);
+        assert_eq!(s.scroll_rings.len(), 2);
+        assert_eq!(s.scroll_rings[1].dir, -1.0);
+        assert_eq!(s.scroll_rings[1].color, scroll_cfg::COLOR_UP);
+        // 滚动中刷新 → idle 归零，ring 仍存活
+        s.scroll_rings[0].idle = 5;
+        s.on_scroll(0.0, 0.0, 1.0, &mut rng);
+        assert_eq!(s.scroll_rings[0].idle, 0);
+    }
+
+    #[test]
+    fn scroll_ring_fades_and_recycles_after_scroll_stops() {
+        let mut s = CursorEffectState::new();
+        let mut rng = SequentialRng::new(&[0.5; 8]);
+        s.on_scroll(0.0, 0.0, 1.0, &mut rng);
+        assert_eq!(s.scroll_rings.len(), 1);
+        let mut now = Instant::now();
+        // 模拟持续滚动 30 帧 → 一直有工作
+        for _ in 0..30 {
+            now += Duration::from_millis(16);
+            s.on_scroll(0.0, 0.0, 1.0, &mut rng);
+            assert!(s.advance(now), "active scroll keeps ring alive");
+        }
+        // 停止滚动 → GRACE+FADE 帧后环回收（甩出的火花稍后自然消亡）。
+        let mut frame = 0u32;
+        while s.scroll_rings.len() > 0 {
+            now += Duration::from_millis(16);
+            assert!(frame < 400, "ring should recycle within 400 frames");
+            s.advance(now);
+            frame += 1;
+        }
+        // 火花最终也会全部消失 → 无工作。
+        while s.has_work() {
+            now += Duration::from_millis(16);
+            assert!(frame < 600, "all particles should die");
+            s.advance(now);
+            frame += 1;
+        }
+        assert!(!s.has_work(), "no work once everything fades");
+    }
+
+    #[test]
+    fn scroll_ring_flings_sparks_along_rotation_direction() {
+        let mut s = CursorEffectState::new();
+        let mut rng = SequentialRng::new(&[0.5; 8]);
+        // 下滚（整档）→ 顺时旋转 (dir=+1)：甩出的火花速度应沿切向（右手方向）。
+        s.on_scroll(0.0, 0.0, 120.0, &mut rng);
+        assert!(s.advance(Instant::now()));
+        let rs = s.scroll_rings[0];
+        let spun: Vec<&Fragment> = s
+            .sparks
+            .iter()
+            .filter(|sp| !sp.from_click && sp.color == scroll_cfg::COLOR_DOWN)
+            .collect();
+        assert!(!spun.is_empty(), "rotation should fling sparks");
+        for sp in spun {
+            let dx = sp.x - rs.x;
+            let dy = sp.y - rs.y;
+            let th = dy.atan2(dx);
+            let (tx, ty) = (rs.dir * (-th.sin()), rs.dir * th.cos());
+            assert!(
+                sp.vx * tx + sp.vy * ty > 0.0,
+                "spark must fly along the ring rotation direction"
+            );
+        }
     }
 
     #[test]
