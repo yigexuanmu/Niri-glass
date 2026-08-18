@@ -22,10 +22,7 @@ uniform float u_mode;    // 0=filledCircle, 1=ring arc stroke, 2=triangle spark,
 uniform vec3  u_color;    // rgb 0..1 (ignored for sparks → white per BASpark)
 uniform vec2  u_center;  // primitive center (geo px)
 uniform float u_radius;  // px
-// ring arc: 线宽沿弧向位置 t 连续插值（weightProp(t) ∈ [u_ring_min_w, u_ring_max_w] × u_ring_w_mul）
-uniform float u_ring_min_w;
-uniform float u_ring_max_w;
-uniform float u_ring_w_mul;
+uniform float u_inner_w; // stroke / band width (px)
 uniform float u_aa;      // antialias half-pixel (px)
 uniform float u_a0;      // ring arc start angle (radians)
 uniform float u_a1;      // ring arc end angle (radians)
@@ -64,20 +61,11 @@ float sd_circle(vec2 p, vec2 c, float r) {
     return length(p - c) - r;
 }
 
-// BASpark `index.html:420-422` weightProp(t) = min(2 - |4(t-0.5)|, 1)：
-// 弧向位置 t∈[0,1] 两侧到中央的描边宽度峰。
-float weight_prop(float t) {
-    return min(2.0 - abs(4.0 * (t - 0.5)), 1.0);
-}
-
-// SDF of a circular arc stroke with CONTINUOUS width along the arc.
-// Line width at angular position t = weightProp(t) interpolated in
-// [min_w, max_w] × w_mul. This replaces the previous discrete per-sub-segment
-// width which made rings look like faceted polygons (jagged edges).
+// SDF of a circular arc stroke band (BASpark ctx.arc + stroke lineWidth).
 // Handles arbitrary a0 < a1 (may cross the ±π boundary) by normalizing to
 // [0, 2π) and measuring the forward arc length from a0. Round caps at the
 // true endpoints. (B7 fix: BASpark ctx.arc accepts any angle range directly.)
-float sd_arc(vec2 p, vec2 c, float r, float a0, float a1, float min_w, float max_w, float w_mul) {
+float sd_arc(vec2 p, vec2 c, float r, float w, float a0, float a1) {
     vec2 d = p - c;
     float ang = atan(d.y, d.x);
     const float TWO_PI = 6.2831853;
@@ -85,15 +73,12 @@ float sd_arc(vec2 p, vec2 c, float r, float a0, float a1, float min_w, float max
     float na0 = mod(a0  + TWO_PI, TWO_PI);
     float arc_len = a1 - a0;                 // > 0 by construction
     float pos = mod(na - na0 + TWO_PI, TWO_PI); // forward distance from na0
-    float t = clamp(pos / max(arc_len, 1e-5), 0.0, 1.0);
-    float w = mix(min_w, max_w, weight_prop(t)) * w_mul;
     float sd;
     if (pos <= arc_len) {
         sd = abs(length(d) - r) - w * 0.5;
     } else {
         vec2 cap0 = c + vec2(cos(a0), sin(a0)) * r;
         vec2 cap1 = c + vec2(cos(a1), sin(a1)) * r;
-        // 端帽使用端点的线宽（t=0/1 → min_w）
         sd = min(length(p - cap0), length(p - cap1)) - w * 0.5;
     }
     return sd;
@@ -127,13 +112,6 @@ float sd_capsule_butt(vec2 p, vec2 a, vec2 b, float w) {
     return length(pa - ba * t) - w * 0.5;
 }
 
-// 蓝色光晕（BASpark "lighter" 泛光外观）：形状外 soft falloff。与形状 core 做
-// 预乘 over 合成（result = core + glow*(1-core)），普通混合下亮背景不饱和、
-// 边缘依旧平滑圆润。
-float glow_cov(float sd, float strength, float radius) {
-    return strength * (1.0 - smoothstep(0.0, radius, max(sd, 0.0)));
-}
-
 void main() {
     vec3 coords_geo3 = input_to_geo * vec3(niri_v_coords, 1.0);
     vec2 p = coords_geo3.xy;
@@ -142,23 +120,22 @@ void main() {
     vec3 rgb = u_color;
 
     if (u_mode < 0.5) {
-        // filledCircle + 蓝色光晕
-        float sd = sd_circle(p, u_center, u_radius);
-        float core = aa_cov(sd, u_aa);
-        float glow = glow_cov(sd, 0.6, 5.5);
-        a = core + glow * (1.0 - core);
+        // filledCircle
+        a = aa_cov(sd_circle(p, u_center, u_radius), u_aa);
     } else if (u_mode < 1.5) {
-        // ring arc stroke — 线宽沿弧连续变化（weightProp），边缘平滑圆润 + 蓝色光晕
-        float sd = sd_arc(p, u_center, u_radius, u_a0, u_a1, u_ring_min_w, u_ring_max_w, u_ring_w_mul);
-        float core = aa_cov(sd, u_aa);
-        float glow = glow_cov(sd, 0.6, 5.5);
-        a = core + glow * (1.0 - core);
+        // ring arc stroke — 1:1 Canvas2D `ctx.stroke()` 行为：lineWidth<1 时
+        // 浏览器按亚像素覆盖率衰减 pixel alpha（W3C canvas2D sub-pixel coverage），
+        // 即 alpha *= min(lineWidth, 1)。我原实现 lw<1 也 saturate-raster → 描边
+        // 比 BASpark 厚 ~2-3×。这里用 sd_arc 的实际半宽 + 末尾 alpha 调制精确复刻。
+        float d_sd = sd_arc(p, u_center, u_radius, u_inner_w, u_a0, u_a1);
+        // aa_cov 已对描边做覆盖率渐变（半宽 + 0.5 物理 px 软边）：lineWidth<1 时
+        // 自然给出亚像素覆盖（中线 alpha ~0.78、边缘 0.5、外 0），即 Canvas2D
+        // ctx.stroke() 的 W3C sub-pixel coverage。**禁止**再 `× min(u_inner_w,1)`：
+        // 那会整体压低 alpha → 加法混合下 ring 重叠叠不亮 → 泛光失效 + 边缘暗淡生硬。
+        a = aa_cov(d_sd, u_aa);
     } else if (u_mode < 2.5) {
-        // spark triangle (BASpark: rgba(255,255,255,alpha)) + 光晕
-        float sd = sd_triangle(p, u_p0, u_p1, u_p2);
-        float core = aa_cov(sd, u_aa);
-        float glow = glow_cov(sd, 0.4, 3.0);
-        a = core + glow * (1.0 - core);
+        // spark triangle (BASpark: rgba(255,255,255,alpha))
+        a = aa_cov(sd_triangle(p, u_p0, u_p1, u_p2), u_aa);
         rgb = vec3(1.0);
     } else {
         // trail: SINGLE polyline distance field (root-cause fix).
@@ -193,12 +170,7 @@ void main() {
             }
             float core_cov = aa_cov(best_d - 2.5, u_aa);
             float halo_cov = 0.6 * (1.0 - smoothstep(0.0, 5.5, best_d));
-            // 预乘 over 合成（与 niri 其余元素一致，非加法混合）：halo 在下、core 在上，
-            // 同色（u_color）下 result = core + halo*(1-core)。保证 alpha∈[0,1]，
-            // 亮背景上不饱和 → AA 软边正确显示（加法混合会饱和成硬边/锯齿）。
-            float core_a = core_cov * best_t;
-            float halo_a = halo_cov * best_t;
-            a = core_a + halo_a * (1.0 - core_a);
+            a = (core_cov + halo_cov) * best_t;
         }
     }
 
