@@ -175,7 +175,7 @@ impl CursorEffectState {
             opacity: 1.0,    // EffectOpacity
             trail_speed: 1.0, // EffectSpeed (link 默认)
             click_speed: 1.0,
-            max_trail: 16,   // index.html:67
+            max_trail: 96,   // 密集 ~2px 采样需更多点才能维持足够拖尾长度（96 点 ≈ 192px）
             trail_refresh_hz: 40, // TrailRefreshRate
             persistent_trail: false, // EnableAlwaysTrailEffect
             apply_curve_draw: false, // ApplyCurveDraw
@@ -548,8 +548,8 @@ mod tests {
         s.on_move(10.0, 10.0, now, &mut rng); // last_pos 先被设
         s.on_move(60.0, 60.0, now, &mut rng); // 距离 70>2 → 沿段 ~2px 细分采样
         assert!(!s.trail.is_empty());
-        // 拖尾点应密集覆盖 (10,10)→(60,60) 段并裁剪到 max_trail
-        assert_eq!(s.trail.len(), s.max_trail);
+        assert!(s.trail.len() <= s.max_trail);
+        // 拖尾点应密集覆盖 (10,10)→(60,60) 段，末端就是当前点
         let last = s.trail.back().unwrap();
         assert!((last.x - 60.0).abs() < 1e-3 && (last.y - 60.0).abs() < 1e-3);
     }

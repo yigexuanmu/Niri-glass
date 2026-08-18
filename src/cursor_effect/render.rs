@@ -571,7 +571,15 @@ pub fn collect_render_elements(
     // ─── Trail: 单条连续 path 描边（BASpark `_updateTrail` lineWidth=5，根因修复
     // 段连接处断裂：单 quad 包络整条 trail，shader 内整条折线的最小 distance field 一次画完，
     // 消除逐段 butt-cap 在连接点把 halo 归零的细缝"线一样断裂"）。
-    let head = state.last_pos;
+    // head（光标当前点）只在拖尾**正在被喂入**时才接到折线末端。否则（松开按键后
+    // 静止的旧 trail 点 + 移开的光标）会把旧 trail 与光标用直线连起来 → 点击 A 后
+    // 移到 B 就画出笔直的 A→B 线段（"锁定鼠标成线"）；且移动期间 trail 不更新，
+    // 中间晃荡完全不可见。松开后 trail 仅随衰减消失，不再连向光标。
+    let head = if state.is_down || state.persistent_trail {
+        state.last_pos
+    } else {
+        None
+    };
     let mut pts: Vec<(f32, f32)> = state.trail.iter().map(|p| (p.x, p.y)).collect();
     if let Some((hx, hy)) = head {
         pts.push((hx, hy));
