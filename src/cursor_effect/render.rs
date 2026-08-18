@@ -372,8 +372,7 @@ fn collect_glyph_elements(
 
             let radius = w.r + seg.r_round_rate * state.scale;
             let seg_num = state::rings_cfg::SEG_NUM;
-            // 字符版：子段隔一个取一个 → 环上字符更少、更大。
-            for k in (0..seg_num).step_by(2) {
+            for k in 0..seg_num {
                 let t0 = k as f32 / seg_num as f32;
                 let t1 = (k + 1) as f32 / seg_num as f32;
                 let seed_k = (w.seed as usize) ^ (1000 + wi * 64 + k);
