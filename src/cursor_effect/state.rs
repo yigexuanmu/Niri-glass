@@ -30,7 +30,7 @@ pub mod rings_cfg {
     pub const MAX_LIFE: f32 = 23.0;
     /// 同上：环的淡出/收缩更慢，位置运动不变；延长后各字符独立消失时间更明显。
     pub const FADE_EXTEND: f32 = 4.0;
-    pub const SEG_NUM: usize = 10;
+    pub const SEG_NUM: usize = 16;
     pub const MIN_W: f32 = 0.4;
     pub const MAX_W: f32 = 3.3;
     pub const LEN_STOP_ADD_POINT: f32 = 0.1;
