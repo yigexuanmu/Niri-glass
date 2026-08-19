@@ -287,7 +287,7 @@ fn collect_glyph_elements(
     let opacity = state.opacity;
 
     // ─── Waves: filledCircle + rings → 字符 ───
-    for (wi, w) in state.waves.iter().enumerate() {
+    for w in state.waves.iter() {
         // 运动：半径/环位置仍由 MAX_LIFE 推进（速度不变）。
         let wave_prog = (w.life / state::filled_cfg::MAX_LIFE).clamp(0.0, 1.0);
         let ring_prog = (w.life / state::rings_cfg::MAX_LIFE).clamp(0.0, 1.0);
@@ -316,7 +316,7 @@ fn collect_glyph_elements(
                         continue;
                     }
                     cell_i += 1;
-                    let seed_c = (w.seed as usize) ^ (70000 + wi * 4096 + cell_i);
+                    let seed_c = (w.seed as usize).wrapping_mul(0x9E37_79B9) ^ (70000 + cell_i);
                     // 每格独立不规则：位置抖动、大小、亮度、淡出时间全部派生自 seed。
                     let jx = (hash_unit(seed_c) - 0.5) * spacing * 0.6;
                     let jy = (hash_unit(seed_c ^ 0x3C1) - 0.5) * spacing * 0.6;
@@ -354,7 +354,7 @@ fn collect_glyph_elements(
         if ring_alpha <= 0.0 {
             continue;
         }
-        for seg in &w.ring.segs {
+        for (seg_idx, seg) in w.ring.segs.iter().enumerate() {
             let seg_off = seg.off;
             // 环淡出不"向固定点收缩"，字符始终分布在整段弧上；淡出改为
             // 每个字符独立不规则的透明度渐变 → 缓慢透明消失、不一起没。
@@ -375,7 +375,12 @@ fn collect_glyph_elements(
             for k in 0..seg_num {
                 let t0 = k as f32 / seg_num as f32;
                 let t1 = (k + 1) as f32 / seg_num as f32;
-                let seed_k = (w.seed as usize) ^ (1000 + wi * 64 + k);
+                // 种子只依赖 wave 自身 seed（不依赖 waves 数组下标 wi —— wi 会随
+                // 前序 wave 回收后移而改变 → 字符速度/字形/淡出中途突变 = 闪现）。
+                // 用 seg 下标区分两段，避免两段字符完全镜像。
+                let seed_k = (w.seed as usize)
+                    .wrapping_mul(0x9E37_79B9)
+                    ^ (seg_idx.wrapping_mul(0x100) + k) as usize;
                 // 每字符独立角速度系数 0.6..1.4（继承环旋转）。
                 let speed_k = 0.6 + hash_unit(seed_k ^ 0x11) * 0.8;
                 // 每字符独立自转速度 0.04..0.12 rad/帧：有下限、各不相同（像落叶），
@@ -383,11 +388,13 @@ fn collect_glyph_elements(
                 let spin_k = 0.04 + hash_unit(seed_k ^ 0x55) * 0.08;
                 // 每字符独立半径 0.85..1.15 → 环不再是一个正圆，逐个漂移。
                 let rad_k = 0.85 + hash_unit(seed_k ^ 0x22) * 0.3;
-                // 每字符独立淡出窗口：起点 0.1..0.5、时长 ≥0.3 窗口（≥28 帧）、
-                // 终点散布到 0.4..1.0（最长差 ~55 帧）→ 明显逐个消失而非一起没。
-                let fade_start_k = 0.1 + hash_unit(seed_k ^ 0x33) * 0.4; // 0.1..0.5
-                let fade_end_k =
-                    (fade_start_k + 0.3 + hash_unit(seed_k ^ 0x44) * 0.4).min(1.0); // 0.4..1.0
+                // 每字符独立淡出窗口：起点 0.05..0.45、时长 0.12..0.62 → 各字符
+                // 在完全不同时刻淡完（明显逐个消失），而非整环同一时刻一起没。
+                let fade_start_k = 0.05 + hash_unit(seed_k ^ 0x33) * 0.4; // 0.05..0.45
+                let fade_end_k = (fade_start_k
+                    + 0.12
+                    + hash_unit(seed_k ^ 0x44) * 0.5)
+                    .min(1.0); // 终点 0.17..1.0，时长 0.12..0.62
                 let fade_prog =
                     ((ring_fade - fade_start_k) / (fade_end_k - fade_start_k)).clamp(0.0, 1.0);
                 let a0 = seg_off + len * t0;
