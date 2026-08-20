@@ -31,28 +31,15 @@
 
 ### 特效预览
 
-<details>
-<summary>🎬 效果演示（点击展开）</summary>
+<img width="1920" height="1080" alt="截图 2026-07-02 00-06-33" src="https://github.com/user-attachments/assets/a10b40c7-b147-4dfa-8208-28ebb4003cfc" />
 
-演示视频托管在 [yigexuanmu/images](https://github.com/yigexuanmu/images/tree/main/Niri-beta) 仓库（`Niri-beta` 文件夹）。
+<img width="1920" height="1080" alt="截图 2026-06-30 12-31-50" src="https://github.com/user-attachments/assets/8cad6485-b685-4bc9-b22e-8cf7801cd15a" />
 
-**点击爆裂** — 左键（蓝）／右键（浅红）／中键（浅黄）：
+<img width="1920" height="1080" alt="截图 2026-06-30 12-32-48" src="https://github.com/user-attachments/assets/fccc46f0-9cda-488b-b0e1-5939d36676cf" />
 
-<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/左键.mp4" controls width="320"></video>
-<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/右键.mp4" controls width="320"></video>
-<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/中键.mp4" controls width="320"></video>
+<img width="1920" height="1080" alt="截图 2026-06-30 12-34-48" src="https://github.com/user-attachments/assets/ff3f0d17-3bf1-42e8-9660-e291189321f9" />
 
-**滚轮代码圆环** — 向下（橙、顺时针）／向上（绿、逆时针）／粒子效果与滚轮速度关联：
-
-<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑轮向下.mp4" controls width="320"></video>
-<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑轮向上.mp4" controls width="320"></video>
-<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑轮粒子效果和滑轮速度的关联.mp4" controls width="320"></video>
-
-**拖尾** — 按住鼠标拖动：
-
-<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑动.mp4" controls width="320"></video>
-
-</details>
+<img width="1920" height="1080" alt="截图 2026-06-30 12-40-40" src="https://github.com/user-attachments/assets/eaeda5ef-1fe3-4e51-8466-10e461240021" />
 
 ### 点击爆裂
 
