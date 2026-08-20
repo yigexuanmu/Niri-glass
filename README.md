@@ -29,18 +29,6 @@
 不依赖任何外部程序。特效以**代码字符**的形式渲染（系统 `sans` 字体栅格化到 atlas，
 配合稳定的伪随机种子，每次点击的字符、速度、半径、淡出时间都不同）。
 
-### 特效预览
-
-<img width="1920" height="1080" alt="截图 2026-07-02 00-06-33" src="https://github.com/user-attachments/assets/a10b40c7-b147-4dfa-8208-28ebb4003cfc" />
-
-<img width="1920" height="1080" alt="截图 2026-06-30 12-31-50" src="https://github.com/user-attachments/assets/8cad6485-b685-4bc9-b22e-8cf7801cd15a" />
-
-<img width="1920" height="1080" alt="截图 2026-06-30 12-32-48" src="https://github.com/user-attachments/assets/fccc46f0-9cda-488b-b0e1-5939d36676cf" />
-
-<img width="1920" height="1080" alt="截图 2026-06-30 12-34-48" src="https://github.com/user-attachments/assets/ff3f0d17-3bf1-42e8-9660-e291189321f9" />
-
-<img width="1920" height="1080" alt="截图 2026-06-30 12-40-40" src="https://github.com/user-attachments/assets/eaeda5ef-1fe3-4e51-8466-10e461240021" />
-
 ### 点击爆裂
 
 - 左键：**蓝色**（配置 `color`）
