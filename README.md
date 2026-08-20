@@ -29,6 +29,22 @@
 不依赖任何外部程序。特效以**代码字符**的形式渲染（系统 `sans` 字体栅格化到 atlas，
 配合稳定的伪随机种子，每次点击的字符、速度、半径、淡出时间都不同）。
 
+### 特效预览
+
+<img width="1920" height="1080" alt="左键爆裂" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E5%B7%A6%E9%94%AE.mp4" />
+
+<img width="1920" height="1080" alt="右键爆裂" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E5%8F%B3%E9%94%AE.mp4" />
+
+<img width="1920" height="1080" alt="中键爆裂" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E4%B8%AD%E9%94%AE.mp4" />
+
+<img width="1920" height="1080" alt="滚轮向下（橙色顺时针）" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E6%BB%91%E8%BD%AE%E5%90%91%E4%B8%8B.mp4" />
+
+<img width="1920" height="1080" alt="滚轮向上（绿色逆时针）" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E6%BB%91%E8%BD%AE%E5%90%91%E4%B8%8A.mp4" />
+
+<img width="1920" height="1080" alt="滑轮粒子效果与速度关联" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E6%BB%91%E8%BD%AE%E7%B2%92%E5%AD%90%E6%95%88%E6%9E%9C%E5%92%8C%E6%BB%91%E8%BD%AE%E9%80%9F%E5%BA%A6%E7%9A%84%E5%85%B3%E8%81%94.mp4" />
+
+<img width="1920" height="1080" alt="拖尾" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E6%BB%91%E5%8A%A8.mp4" />
+
 ### 点击爆裂
 
 - 左键：**蓝色**（配置 `color`）
