@@ -28,6 +28,7 @@
 参考 BASpark 风格实现的合成器内鼠标矢量粒子特效，全部用 GLES 直接在合成器内绘制，
 不依赖任何外部程序。特效以**代码字符**的形式渲染（系统 `sans` 字体栅格化到 atlas，
 配合稳定的伪随机种子，每次点击的字符、速度、半径、淡出时间都不同）。
+（原本是打算1:1复刻BASpark的全部效果，但作者是baka，没有解决抗锯齿问题，就放弃了复刻想法，然后鬼脑一动，想起了代码风格，就慢慢vibe成了这样子）
 
 <details><summary>[展开/收起] 鼠标特效预览</summary>
 <br>
@@ -52,7 +53,7 @@
 
 <img width="960" alt="滚轮向上（绿色逆时针）" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E6%BB%91%E8%BD%AE%E5%90%91%E4%B8%8A.gif" />
 
-- 滑轮粒子效果与速度关联
+- 滑轮粒子效果与速度关联（滚轮速度越快，粒子越多）
 
 <img width="960" alt="滑轮粒子效果与速度关联" src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/%E6%BB%91%E8%BD%AE%E7%B2%92%E5%AD%90%E6%95%88%E6%9E%9C%E5%92%8C%E6%BB%91%E8%BD%AE%E9%80%9F%E5%BA%A6%E7%9A%84%E5%85%B3%E8%81%94.gif" />
 
