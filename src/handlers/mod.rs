@@ -67,7 +67,7 @@ use smithay::wayland::xdg_activation::{
 pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
 use crate::input::click_grab::ClickGrab;
 use crate::layout::workspace::WorkspaceId;
-use crate::layout::ActivateWindow;
+use crate::layout::{ActivateWindow, LayoutElement};
 use crate::niri::{DndIcon, NewClient, State};
 use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{
@@ -835,18 +835,37 @@ impl XdgActivationHandler for State {
         if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
             if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(&surface) {
                 let window = mapped.window.clone();
-                if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
-                    mapped.set_urgent(true);
-                    self.niri.queue_redraw_all();
-                } else {
-                    // Restore the window first if it is minimized, without activating: the
-                    // activation itself is handled below with its own semantics.
-                    if self.niri.layout.is_window_minimized(&window) {
-                        self.niri.layout.unminimize_window(&window, false);
+match mapped.rules().on_xdg_activate {
+                    Some(niri_config::OnXdgActivate::Ignore) => {}
+                    Some(niri_config::OnXdgActivate::SetUrgent) => {
+                        mapped.set_urgent(true);
+                        self.niri.queue_redraw_all();
                     }
-                    self.niri.layout.activate_window_from_activation(&window);
-                    self.niri.layer_shell_on_demand_focus = None;
-                    self.niri.queue_redraw_all();
+                    Some(niri_config::OnXdgActivate::Focus) => {
+                        // Restore the window first if it is minimized, without activating: the
+                        // activation itself is handled below with its own semantics.
+                        if self.niri.layout.is_window_minimized(&window) {
+                            self.niri.layout.unminimize_window(&window, false);
+                        }
+                        self.niri.layout.activate_window_from_activation(&window);
+                        self.niri.layer_shell_on_demand_focus = None;
+                        self.niri.queue_redraw_all();
+                    }
+                    None => {
+                        if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
+                            mapped.set_urgent(true);
+                            self.niri.queue_redraw_all();
+                        } else {
+                            // Restore the window first if it is minimized, without activating: the
+                            // activation itself is handled below with its own semantics.
+                            if self.niri.layout.is_window_minimized(&window) {
+                                self.niri.layout.unminimize_window(&window, false);
+                            }
+                            self.niri.layout.activate_window_from_activation(&window);
+                            self.niri.layer_shell_on_demand_focus = None;
+                            self.niri.queue_redraw_all();
+                        }
+                    }
                 }
             } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(&surface) {
                 unmapped.activation_token_data = Some(token_data);
