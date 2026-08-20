@@ -29,6 +29,31 @@
 不依赖任何外部程序。特效以**代码字符**的形式渲染（系统 `sans` 字体栅格化到 atlas，
 配合稳定的伪随机种子，每次点击的字符、速度、半径、淡出时间都不同）。
 
+### 特效预览
+
+<details>
+<summary>🎬 效果演示（点击展开）</summary>
+
+演示视频托管在 [yigexuanmu/images](https://github.com/yigexuanmu/images/tree/main/Niri-beta) 仓库（`Niri-beta` 文件夹）。
+
+**点击爆裂** — 左键（蓝）／右键（浅红）／中键（浅黄）：
+
+<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/左键.mp4" controls width="320"></video>
+<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/右键.mp4" controls width="320"></video>
+<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/中键.mp4" controls width="320"></video>
+
+**滚轮代码圆环** — 向下（橙、顺时针）／向上（绿、逆时针）／粒子效果与滚轮速度关联：
+
+<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑轮向下.mp4" controls width="320"></video>
+<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑轮向上.mp4" controls width="320"></video>
+<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑轮粒子效果和滑轮速度的关联.mp4" controls width="320"></video>
+
+**拖尾** — 按住鼠标拖动：
+
+<video src="https://raw.githubusercontent.com/yigexuanmu/images/main/Niri-beta/滑动.mp4" controls width="320"></video>
+
+</details>
+
 ### 点击爆裂
 
 - 左键：**蓝色**（配置 `color`）
