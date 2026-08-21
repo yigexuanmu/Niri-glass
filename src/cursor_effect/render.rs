@@ -470,8 +470,8 @@ fn collect_glyph_elements(
             continue;
         }
         let t = if n > 1 { i as f32 / (n as f32 - 1.0) } else { 1.0 };
-        // 尾→头线性渐变：尾部淡、头部亮。
-        let alpha = (0.08 + t * 0.87).min(0.95);
+        // 尾→头线性渐变：尾部淡、头部亮（尾底抬高到 0.12，长拖尾整条可见）。
+        let alpha = (0.12 + t * 0.83).min(0.95);
         out.push(CursorEffectElement::glyph(
             Point::from((p.x as f64, p.y as f64)),
             9.0,

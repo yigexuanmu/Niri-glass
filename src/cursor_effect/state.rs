@@ -180,6 +180,9 @@ pub struct ScrollRing {
     pub last_ang: f32,
     /// 自上次滚动 tick 以来的帧数；滚动 tick 会归零刷新。
     pub idle: u16,
+    /// 滚轮旋转速率（rad/帧）= 注入角 ÷ 距上一滚动事件的帧数：慢滚 → 低速率，
+    /// 快滚 → 高速率。甩出火花的速度 ∝ 该速率（而非每个事件固定的注入角）。
+    pub ang_rate: f32,
     /// 随机种子（外观：字符淡出窗口、大小）。
     pub seed: u64,
     /// 甩出火花计数器（确定性伪随机用）。
@@ -264,7 +267,8 @@ impl CursorEffectState {
             opacity: 1.0,
             trail_speed: 1.0,
             click_speed: 1.0,
-            max_trail: 320,  // 密集 ~2px 采样需更多点才能维持足够拖尾长度（320 点 ≈ 640px）
+            max_trail: 1200, // 密集 ~2px 采样；1200 点 ≈ 2400px，快速拖动不再被点容量截断
+                            // （旧 320 点 ≈ 640px，快拖必然打满 → 拖尾恒定长度）
             trail_refresh_hz: 40,
             persistent_trail: false,
             apply_curve_draw: false,
@@ -506,13 +510,15 @@ impl CursorEffectState {
     /// updateTrail：拖尾点寿命衰减（绘制在 render 层）。
     fn update_trail(&mut self, trail_fs: f32) {
         let n = self.trail.len();
+        // 点按“距离采样（2px）+ 按帧衰减”平衡：存活长度 ≈ 拖动速度 × 点寿命。
+        // 0.020 → 寿命 ~50 帧（60Hz）：快速拖动拖尾明显更长，慢拖自然更短。
         let base_decay = if self.persistent_trail {
-            0.035
+            0.020
         } else if self.is_down {
-            0.035
+            0.020
         } else {
-            0.10
-        }; // 数值调慢：拖尾消失更慢，位置/速度不变
+            0.10 // 松开后快速收尾（不拖拽时拖尾尽快消失）
+        };
         let base_decay = base_decay * trail_fs;
         let max_step = 0.42;
         let span = (n as f32 - 1.0).max(1.0);
@@ -603,10 +609,14 @@ impl CursorEffectState {
             .iter_mut()
             .find(|r| r.dir == dir && (r.x - x).hypot(r.y - y) < scroll_cfg::MERGE_DIST);
         if let Some(r) = merged {
+            // 滚轮速率 = 注入角 ÷ 距上一滚动事件的帧数（rad/帧）。慢滚（事件间隔
+            // 长）→ 低速率 → 火花慢；快滚（事件密集）→ 高速率 → 火花快。
+            let gap = (r.idle as f32).max(1.0);
             r.x = x;
             r.y = y;
             r.idle = 0;
             r.ang += angle_step;
+            r.ang_rate = angle_step / gap;
         } else {
             let seed = ((rng.f32() as f64 * 1e9) as u64) ^ (((rng.f32() as f64 * 1e9) as u64) << 32);
             self.scroll_rings.push(ScrollRing {
@@ -617,6 +627,7 @@ impl CursorEffectState {
                 ang: angle_step,
                 last_ang: 0.0,
                 idle: 0,
+                ang_rate: angle_step, // 新环无历史间隔：按单帧事件折算（≈旧行为）
                 seed,
                 spark_sn: 0,
             });
@@ -645,12 +656,17 @@ impl CursorEffectState {
                     let f = 1.0 - r.idle as f32 / scroll_cfg::ROT_STOP_FRAMES as f32;
                     r.ang += scroll_cfg::COAST_ANGLE * r.dir * f * base_scale;
                 }
-                // 本帧扫过的角 → 切向甩出火花（力度 ∝ 转动速度）。
+                // 本帧扫过的角 → 切向甩出火花。
                 let ds = r.ang - r.last_ang;
                 r.last_ang = r.ang;
+                // 滚轮速率逐帧指数衰减：滚动停止后惯性阶段甩出的火花也越来越慢。
+                r.ang_rate *= 0.92;
                 if ds.abs() > 0.02 {
                     let rad = scroll_cfg::RADIUS * (self.scale / 1.5);
                     let n = ((ds.abs() / 0.08).round() as usize).clamp(1, 3);
+                    // 火花力度 ∝ 滚轮速率（rad/帧）：慢滚 → 慢火花、快滚 → 快火花；
+                    // 下限 0.02 保证停止滚动后的惯性火花仍可见（并随衰减趋零）。
+                    let rate = r.ang_rate.abs().max(0.02);
                     for _ in 0..n {
                         r.spark_sn = r.spark_sn.wrapping_add(1);
                         let th = hash_unit(
@@ -664,7 +680,7 @@ impl CursorEffectState {
                         // 力度范围化：速度乘系数 0.3..1.6 分布 + 切向角度 ±0.35rad 抖动，
                         // 让火花以不同距离和角度散开，光标周围不会空。
                         let k = hash_unit(r.spark_sn as usize ^ 0x51) * 1.3 + 0.3;
-                        let speed = rad * ds.abs() * 0.6 * k;
+                        let speed = rad * rate * 0.6 * k;
                         let jitter = (hash_unit(r.spark_sn as usize ^ 0x52) - 0.5) * 0.7;
                         let ct = tx * jitter.cos() - ty * jitter.sin();
                         let st = tx * jitter.sin() + ty * jitter.cos();
@@ -967,6 +983,69 @@ mod tests {
                 "spark must fly along the ring rotation direction"
             );
         }
+    }
+
+    #[test]
+    fn trail_length_scales_with_drag_speed() {
+        // 回归：拖尾长度必须随拖动速度变化（点按距离采样 + 按帧衰减的平衡长度
+        // ≈ 速度 × 点寿命）。旧实现 max_trail=320（≈640px）快拖必打满 → 恒定长度。
+        fn trail_len_after(speed: f32, frames: usize) -> usize {
+            let mut s = CursorEffectState::new();
+            let mut rng = SequentialRng::new(&[0.5; 8]); // 0.5 不触发拖尾火花（<0.3 才触发）
+            let mut now = Instant::now();
+            s.is_down = true;
+            s.on_move(0.0, 0.0, now, &mut rng); // 初始化 last_pos
+            let mut x = 0.0f32;
+            for _ in 0..frames {
+                x += speed;
+                now += Duration::from_millis(16);
+                s.on_move(x, 0.0, now, &mut rng);
+                s.advance(now);
+            }
+            s.trail.len()
+        }
+        let slow = trail_len_after(4.0, 300); // ~2 点/帧 → 平衡 ~100-140 点
+        let fast = trail_len_after(20.0, 300); // ~10 点/帧 → 平衡 ~500-700 点
+        assert!(
+            fast > slow * 3,
+            "fast drag must yield longer trail: fast={fast} slow={slow}"
+        );
+        assert!(fast <= 1200, "trail must not exceed max_trail: {fast}");
+    }
+
+    #[test]
+    fn scroll_spark_speed_follows_wheel_cadence() {
+        // 回归：滚轮越慢，甩出的火花必须越慢。旧实现火花速度 ∝ 每事件固定注入角
+        // （ds），与事件间隔无关 → 慢滚一个档火花照样快。
+        // 现改为 ∝ 滚轮速率（注入角 ÷ 距上一事件帧数）。
+        fn spark_speeds_after_gap(gap_frames: u32) -> Vec<f32> {
+            let mut s = CursorEffectState::new();
+            let mut rng = SequentialRng::new(&[0.5; 8]);
+            let mut now = Instant::now();
+            s.on_scroll(0.0, 0.0, 120.0, &mut rng); // 首事件：建环
+            for _ in 0..gap_frames {
+                now += Duration::from_millis(16);
+                s.advance(now); // 事件间隔：惯性期甩出的火花不参与比较
+            }
+            s.sparks.clear();
+            s.on_scroll(0.0, 0.0, 120.0, &mut rng); // 间隔 gap 帧后再次滚动一整档
+            now += Duration::from_millis(16);
+            s.advance(now); // 本帧扫过注入角 → 甩火花
+            s.sparks
+                .iter()
+                .filter(|sp| !sp.from_click)
+                .map(|sp| sp.vx.hypot(sp.vy))
+                .collect()
+        }
+        let fast = spark_speeds_after_gap(2); // 事件密集 → 高速率 → 快火花
+        let slow = spark_speeds_after_gap(30); // 事件稀疏 → 低速率 → 慢火花
+        assert!(!fast.is_empty() && !slow.is_empty());
+        let min_fast = fast.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_slow = slow.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            min_fast > max_slow * 2.0,
+            "slow scroll must fling slower sparks: fast={fast:?} slow={slow:?}"
+        );
     }
 
     #[test]

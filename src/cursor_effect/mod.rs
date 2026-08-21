@@ -31,8 +31,9 @@ impl Niri {
         ce.show_on_desktop = cfg.show_on_desktop;
         ce.scale = cfg.scale as f32;
         ce.opacity = cfg.opacity as f32;
-        // 拖尾按 ~2px 密集采样（每事件 + 段内细分）；提高点容量以保持拖尾长度且平滑。
-        ce.max_trail = 320;
+        // 拖尾按 ~2px 密集采样（每事件 + 段内细分）；点容量提高后快速拖动
+        // 不再被截断 → 拖尾长度随拖动速度变长（点按距离采样、按帧衰减）。
+        ce.max_trail = 1200;
         ce.trail_refresh_hz = cfg.trail_refresh_rate;
         ce.color = cfg.color.0;
         ce.color_left = cfg.color.0;
