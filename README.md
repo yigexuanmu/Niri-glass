@@ -173,7 +173,7 @@ cd Niri-glass
 
 ```kdl
 window-rule {
-    match app-id =".*"
+    match app-id=".*"
     background-effect {
         blur true
         xray true
