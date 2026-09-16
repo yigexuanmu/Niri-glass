@@ -1,6 +1,6 @@
 use std::ptr;
 
-use anyhow::{ensure, Context as _};
+use anyhow::{bail, ensure, Context as _};
 use niri_config::BlockOutFrom;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Fourcc};
@@ -263,6 +263,35 @@ pub fn render_and_download(
     copy_framebuffer(renderer, &target, fourcc).context("error copying framebuffer")
 }
 
+pub fn render_and_download_with_damage(
+    renderer: &mut GlesRenderer,
+    damage_tracker: &mut OutputDamageTracker,
+    fourcc: Fourcc,
+    elements: &[impl RenderElement<GlesRenderer>],
+    states: RenderElementStates,
+) -> anyhow::Result<GlesMapping> {
+    let _span = tracy_client::span!();
+
+    let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
+    let mut texture = create_texture(renderer, size, fourcc).context("error creating texture")?;
+    let mut target = renderer
+        .bind(&mut texture)
+        .context("error binding texture")?;
+
+    let _res = damage_tracker
+        .render_output_with_states(
+            renderer,
+            &mut target,
+            0,
+            elements,
+            Color32F::TRANSPARENT,
+            states,
+        )
+        .context("error rendering")?;
+
+    copy_framebuffer(renderer, &target, fourcc).context("error copying framebuffer")
+}
+
 pub fn render_to_vec(
     renderer: &mut GlesRenderer,
     size: Size<i32, Physical>,
@@ -313,6 +342,7 @@ pub fn render_to_shm(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
     buffer: &WlBuffer,
+    format: wl_shm::Format,
     elements: &[impl RenderElement<GlesRenderer>],
     states: RenderElementStates,
 ) -> anyhow::Result<()> {
@@ -321,11 +351,15 @@ pub fn render_to_shm(
     // buffers besides this one... buffer_data is the one we want.
     shm::with_buffer_contents_mut(buffer, |pool, pool_len, buffer_data| {
         let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
-        let fourcc = Fourcc::Xrgb8888;
+        let fourcc = match format {
+            wl_shm::Format::Xrgb8888 => Fourcc::Xrgb8888,
+            wl_shm::Format::Argb8888 => Fourcc::Argb8888,
+            _ => bail!("unsupported shm format: {format:?}"),
+        };
 
         ensure!(
             // The buffer prefers pixels in little endian ...
-            buffer_data.format == wl_shm::Format::Xrgb8888
+            buffer_data.format == format
                 && buffer_data.width == size.w
                 && buffer_data.height == size.h,
             "invalid buffer format or size"

@@ -1860,6 +1860,13 @@ impl Tty {
         Some(f(renderer.as_gles_renderer()))
     }
 
+    pub fn primary_render_node(&mut self) -> Option<DrmNode> {
+        self.gpu_manager
+            .single_renderer(&self.primary_render_node)
+            .ok()
+            .map(|_| self.primary_render_node)
+    }
+
     pub fn render(
         &mut self,
         niri: &mut Niri,

@@ -335,7 +335,7 @@ impl State {
             }
         };
 
-        let (gbm, render_formats) = match self.prepare_pw_cast() {
+        let gbm = match self.prepare_pw_cast() {
             Ok(x) => x,
             Err(err) => {
                 warn!("error starting pending screencasts: {err:?}");
@@ -357,9 +357,10 @@ impl State {
         // Start each pending cast.
         let mut to_stop = HashSet::new();
         for pending in self.niri.casting.pending_dynamic_casts.drain(..) {
+            let (gbm, formats) = gbm.clone();
             let res = pw.start_cast(
-                gbm.clone(),
-                render_formats.clone(),
+                gbm,
+                formats,
                 pending.session_id,
                 pending.stream_id,
                 target.clone(),
@@ -442,7 +443,7 @@ impl State {
                     }
                 };
 
-                let (gbm, render_formats) = match self.prepare_pw_cast() {
+                let gbm = match self.prepare_pw_cast() {
                     Ok(x) => x,
                     Err(err) => {
                         warn!("error starting screencast: {err:?}");
@@ -452,9 +453,10 @@ impl State {
                 };
                 let pw = self.niri.casting.pipewire.as_ref().unwrap();
 
+                let (gbm, formats) = gbm;
                 let res = pw.start_cast(
                     gbm,
-                    render_formats,
+                    formats,
                     session_id,
                     stream_id,
                     target,
