@@ -1897,7 +1897,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_left(&mut self) {
         if self
-            .run_active_grid_overview_action(|this| {
+            .run_active_grid_move_action(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.move_left();
                 }
@@ -1917,7 +1917,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_right(&mut self) {
         if self
-            .run_active_grid_overview_action(|this| {
+            .run_active_grid_move_action(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.move_right();
                 }
@@ -1937,7 +1937,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_column_to_first(&mut self) {
         if self
-            .run_active_grid_overview_action(|this| {
+            .run_active_grid_move_action(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.move_column_to_first();
                 }
@@ -1957,7 +1957,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_column_to_last(&mut self) {
         if self
-            .run_active_grid_overview_action(|this| {
+            .run_active_grid_move_action(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.move_column_to_last();
                 }
@@ -1976,12 +1976,14 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_column_left_or_to_output(&mut self, output: &Output) -> bool {
-        if let Some((ws_id, focus_id, window_visual_snapshots)) = self.active_grid_overview_action()
-        {
+        if let Some((ws_id, focus_id, window_visual_snapshots)) = self.active_grid_move_action() {
             let moved_within = self
                 .active_workspace_mut()
                 .is_some_and(|workspace| workspace.move_left());
-            if !moved_within {
+            // A minimized cell is only reordered within its workspace: moving it to another output
+            // would act on the active column, which belongs to a different window.
+            let to_output = !moved_within && !self.is_window_minimized(&focus_id);
+            if to_output {
                 self.move_column_to_output_unchecked(output, None, true);
             }
             self.refresh_grid_workspace_after_action(
@@ -1990,7 +1992,7 @@ impl<W: LayoutElement> Layout<W> {
                 true,
                 window_visual_snapshots,
             );
-            return !moved_within;
+            return to_output;
         }
         if self.grid_move_guard() {
             return false;
@@ -2006,12 +2008,14 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_column_right_or_to_output(&mut self, output: &Output) -> bool {
-        if let Some((ws_id, focus_id, window_visual_snapshots)) = self.active_grid_overview_action()
-        {
+        if let Some((ws_id, focus_id, window_visual_snapshots)) = self.active_grid_move_action() {
             let moved_within = self
                 .active_workspace_mut()
                 .is_some_and(|workspace| workspace.move_right());
-            if !moved_within {
+            // A minimized cell is only reordered within its workspace: moving it to another output
+            // would act on the active column, which belongs to a different window.
+            let to_output = !moved_within && !self.is_window_minimized(&focus_id);
+            if to_output {
                 self.move_column_to_output_unchecked(output, None, true);
             }
             self.refresh_grid_workspace_after_action(
@@ -2020,7 +2024,7 @@ impl<W: LayoutElement> Layout<W> {
                 true,
                 window_visual_snapshots,
             );
-            return !moved_within;
+            return to_output;
         }
         if self.grid_move_guard() {
             return false;
@@ -2037,7 +2041,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_column_to_index(&mut self, index: usize) {
         if self
-            .run_active_grid_overview_action(|this| {
+            .run_active_grid_move_action(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.move_column_to_index(index);
                 }
@@ -2057,7 +2061,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_down(&mut self) {
         if self
-            .run_active_grid_overview_action_preserving_move_animations(|this| {
+            .run_active_grid_move_action_preserving_move_animations(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.move_down();
                 }
@@ -2077,7 +2081,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn move_up(&mut self) {
         if self
-            .run_active_grid_overview_action_preserving_move_animations(|this| {
+            .run_active_grid_move_action_preserving_move_animations(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.move_up();
                 }
@@ -2676,7 +2680,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
         if self
-            .run_active_grid_overview_action(|this| {
+            .run_active_grid_move_action(|this| {
                 if let Some(workspace) = this.active_workspace_mut() {
                     workspace.swap_window_in_direction(direction);
                 }
@@ -5738,10 +5742,7 @@ impl<W: LayoutElement> Layout<W> {
     pub fn workspaces(
         &self,
     ) -> impl Iterator<Item = (Option<&Monitor<W>>, usize, &Workspace<W>)> + '_ {
-        let iter_normal;
-        let iter_no_outputs;
-
-        match &self.monitor_set {
+        let (iter_normal, iter_no_outputs) = match &self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 let it = monitors.iter().flat_map(|mon| {
                     mon.workspaces
@@ -5750,8 +5751,7 @@ impl<W: LayoutElement> Layout<W> {
                         .map(move |(idx, ws)| (Some(mon), idx, ws))
                 });
 
-                iter_normal = Some(it);
-                iter_no_outputs = None;
+                (Some(it), None)
             }
             MonitorSet::NoOutputs { workspaces } => {
                 let it = workspaces
@@ -5759,10 +5759,9 @@ impl<W: LayoutElement> Layout<W> {
                     .enumerate()
                     .map(|(idx, ws)| (None, idx, ws));
 
-                iter_normal = None;
-                iter_no_outputs = Some(it);
+                (None, Some(it))
             }
-        }
+        };
 
         let iter_normal = iter_normal.into_iter().flatten();
         let iter_no_outputs = iter_no_outputs.into_iter().flatten();
@@ -5770,25 +5769,20 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn workspaces_mut(&mut self) -> impl Iterator<Item = &mut Workspace<W>> + '_ {
-        let iter_normal;
-        let iter_no_outputs;
-
-        match &mut self.monitor_set {
+        let (iter_normal, iter_no_outputs) = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 let it = monitors
                     .iter_mut()
                     .flat_map(|mon| mon.workspaces.iter_mut());
 
-                iter_normal = Some(it);
-                iter_no_outputs = None;
+                (Some(it), None)
             }
             MonitorSet::NoOutputs { workspaces } => {
                 let it = workspaces.iter_mut();
 
-                iter_normal = None;
-                iter_no_outputs = Some(it);
+                (None, Some(it))
             }
-        }
+        };
 
         let iter_normal = iter_normal.into_iter().flatten();
         let iter_no_outputs = iter_no_outputs.into_iter().flatten();
@@ -6012,6 +6006,24 @@ impl<W: LayoutElement> Layout<W> {
     fn active_grid_overview_action(
         &mut self,
     ) -> Option<(WorkspaceId, W::Id, Vec<GridWindowVisual<W>>)> {
+        self.active_grid_action_target(false)
+    }
+
+    /// Like [`Self::active_grid_overview_action`], but for moves of the focused cell.
+    ///
+    /// A minimized cell can never become the strip's active column, so it must not be restored and
+    /// activated here: the workspace's move methods reorder its placeholder column in place, which
+    /// keeps it minimized.
+    fn active_grid_move_action(
+        &mut self,
+    ) -> Option<(WorkspaceId, W::Id, Vec<GridWindowVisual<W>>)> {
+        self.active_grid_action_target(true)
+    }
+
+    fn active_grid_action_target(
+        &mut self,
+        allow_minimized: bool,
+    ) -> Option<(WorkspaceId, W::Id, Vec<GridWindowVisual<W>>)> {
         let ws = self.active_workspace_mut()?;
         if !ws.is_grid_overview_open() {
             return None;
@@ -6019,7 +6031,8 @@ impl<W: LayoutElement> Layout<W> {
 
         let window_visual_snapshots = ws.grid_window_visual_snapshots();
         let id = ws.grid_focused_window_id()?;
-        if !ws.activate_window_from_grid(&id) {
+        let keep_minimized = allow_minimized && ws.has_minimized_window(&id);
+        if !keep_minimized && !ws.activate_window_from_grid(&id) {
             return None;
         }
         Some((ws.id(), id, window_visual_snapshots))
@@ -6048,7 +6061,22 @@ impl<W: LayoutElement> Layout<W> {
         &mut self,
         action: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
-        self.run_active_grid_overview_action_inner(action, true)
+        self.run_active_grid_overview_action_inner(action, true, false)
+    }
+
+    /// Like [`Self::run_active_grid_overview_action`], but for moves: a minimized focused cell is
+    /// reordered as-is instead of being restored first.
+    fn run_active_grid_move_action<R>(&mut self, action: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        self.run_active_grid_overview_action_inner(action, true, true)
+    }
+
+    /// [`Self::run_active_grid_move_action`] that keeps in-flight move animations, for moves
+    /// within a column.
+    fn run_active_grid_move_action_preserving_move_animations<R>(
+        &mut self,
+        action: impl FnOnce(&mut Self) -> R,
+    ) -> Option<R> {
+        self.run_active_grid_overview_action_inner(action, false, true)
     }
 
     /// Like [`Self::run_active_grid_overview_action`], but skips the grid refresh when the
@@ -6075,19 +6103,14 @@ impl<W: LayoutElement> Layout<W> {
         moved
     }
 
-    fn run_active_grid_overview_action_preserving_move_animations<R>(
-        &mut self,
-        action: impl FnOnce(&mut Self) -> R,
-    ) -> Option<R> {
-        self.run_active_grid_overview_action_inner(action, false)
-    }
-
     fn run_active_grid_overview_action_inner<R>(
         &mut self,
         action: impl FnOnce(&mut Self) -> R,
         stop_move_animations: bool,
+        allow_minimized: bool,
     ) -> Option<R> {
-        let (ws_id, focus_id, window_visual_snapshots) = self.active_grid_overview_action()?;
+        let (ws_id, focus_id, window_visual_snapshots) =
+            self.active_grid_action_target(allow_minimized)?;
         let rv = action(self);
         self.refresh_grid_workspace_after_action(
             ws_id,

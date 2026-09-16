@@ -39,7 +39,7 @@ use smithay::wayland::keyboard_shortcuts_inhibit::{
 };
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::pointer_constraints::{
-    with_pointer_constraint, PointerConstraint, PointerConstraintsHandler,
+    with_pointer_constraint, ConstraintRemove, PointerConstraintsHandler,
 };
 use smithay::wayland::security_context::{
     SecurityContext, SecurityContextHandler, SecurityContextListenerSource,
@@ -206,7 +206,7 @@ impl PointerConstraintsHandler for State {
         &mut self,
         _surface: &WlSurface,
         pointer: &PointerHandle<Self>,
-        _constraint: Option<&PointerConstraint>,
+        reason: ConstraintRemove,
     ) {
         // Since a pointer constraint is broken when a surface loses pointer focus, and one surface
         // can only have a single pointer constraint at once, assume there can be only one
@@ -219,11 +219,7 @@ impl PointerConstraintsHandler for State {
 
         // If the constraint was broken by the pointer forcibly leaving the surface (e.g. the user
         // opened the overview), then it doesn't make much sense to warp it.
-        //
-        // Furthermore, when the constraint is removed as part of the pointer leaving the surface,
-        // this call happens with locked pointer data, and calling set_location() will try to lock
-        // it again and deadlock.
-        if pointer.last_enter().is_none() {
+        if matches!(reason, ConstraintRemove::PointerLeave(_)) {
             return;
         }
 
@@ -835,7 +831,10 @@ impl XdgActivationHandler for State {
         if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
             if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(&surface) {
                 let window = mapped.window.clone();
-match mapped.rules().on_xdg_activate {
+                // Upstream's on-xdg-activate rule, with the fork's activation path: a
+                // minimized window is restored first (without activating, the activation below
+                // has its own semantics), and activation goes through the grid-aware helper.
+                match mapped.rules().on_xdg_activate {
                     Some(niri_config::OnXdgActivate::Ignore) => {}
                     Some(niri_config::OnXdgActivate::SetUrgent) => {
                         mapped.set_urgent(true);

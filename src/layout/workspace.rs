@@ -20,9 +20,12 @@ use smithay::wayland::shell::xdg::SurfaceCachedState;
 use tracing::debug;
 
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
-use super::grid_overview::{GridDirection, GridEntryInfo, GridItem, GridOverview};
+use super::focus_ring::FocusRingRenderElement;
+use super::grid_overview::{
+    GridDirection, GridEntryInfo, GridItem, GridOverview, MinimizedHighlightEntry,
+};
 use super::scrolling::{
-    Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
+    Column, ColumnWidth, MoveTargets, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
 };
 use super::shadow::Shadow;
 use super::tab_indicator::TabIndicator;
@@ -177,6 +180,7 @@ niri_render_elements! {
         Floating = FloatingSpaceRenderElement<R>,
         GridTile =
             RelocateRenderElement<OverviewRescaleRenderElement<ScrollingSpaceRenderElement<R>>>,
+        MinimizedHighlight = FocusRingRenderElement,
     }
 }
 
@@ -1359,6 +1363,8 @@ impl<W: LayoutElement> Workspace<W> {
             }
         }
 
+        self.update_grid_minimized_highlights();
+
         if layer.is_normal() {
             self.shadow.update_render_elements(
                 self.view_size,
@@ -1367,6 +1373,50 @@ impl<W: LayoutElement> Workspace<W> {
                 self.scale.fractional_scale(),
                 1.,
             );
+        }
+    }
+
+    /// Sizes the highlights drawn behind the cells of minimized windows.
+    ///
+    /// Minimized windows are only ever on screen in the grid overview, where nothing else sets
+    /// them apart from normal windows. The highlight is sized in screen space so it keeps the same
+    /// thickness no matter how far the grid scales the cells down.
+    fn update_grid_minimized_highlights(&mut self) {
+        let config = self.options.grid_overview.minimized_highlight;
+        let scale = self.scale.fractional_scale();
+
+        // Every cell is passed along, not just the minimized ones: a cell that was just restored
+        // still has a highlight fading out, and it keeps following that cell's size.
+        let mut entries = Vec::new();
+        if !config.off {
+            if let Some(go) = &self.grid_overview {
+                if go.open || go.progress.is_some() {
+                    for (item, info) in &go.layout.entries {
+                        let id = item.window_id();
+                        let Some(win) = self.windows().find(|win| win.id() == id) else {
+                            continue;
+                        };
+                        let is_urgent = win.is_urgent();
+                        let is_minimized = win.is_minimized();
+
+                        let (_, visual_scale) = self.grid_item_visual_transform(go, item, info);
+                        let source_size = info.target_size.downscale(info.target_scale.max(0.0001));
+                        let visual_size = source_size.upscale(visual_scale);
+                        let size =
+                            visual_size + Size::from((config.padding * 2., config.padding * 2.));
+                        entries.push(MinimizedHighlightEntry {
+                            window: id.clone(),
+                            size,
+                            is_urgent,
+                            is_minimized,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(go) = &mut self.grid_overview {
+            go.update_minimized_highlights(&entries, scale);
         }
     }
 
@@ -1399,8 +1449,16 @@ impl<W: LayoutElement> Workspace<W> {
         self.background_buffer
             .set_color(options.layout.background_color);
 
+        if let Some(go) = &mut self.grid_overview {
+            go.update_config(options.clone());
+        }
+
         self.base_options = base_options;
         self.options = options;
+
+        // Gap, padding and scales feed the grid layout, so an open grid has to be laid out again
+        // for a config change to show up. A change that doesn't move anything is a no-op here.
+        self.recompute_grid_overview_layout(true);
     }
 
     pub fn update_layout_config(&mut self, layout_config: Option<niri_config::LayoutPart>) {
@@ -2059,46 +2117,104 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Which columns strip moves may land on.
+    ///
+    /// The grid overview shows minimized windows as their own cells, so moves started from it have
+    /// to step over the placeholder columns they live in instead of skipping them.
+    fn move_targets(&self) -> MoveTargets {
+        if self.is_grid_overview_open() {
+            MoveTargets::AllColumns
+        } else {
+            MoveTargets::Interactive
+        }
+    }
+
+    /// The grid-focused window, when it is a minimized one.
+    ///
+    /// Such a window can never be the strip's active column, so moves of its cell go through the
+    /// placeholder reorder path and it stays minimized. The active column belongs to a different
+    /// window, so moves that cannot be expressed that way must be no-ops rather than act on it.
+    fn grid_minimized_focus(&self) -> Option<W::Id> {
+        if !self.is_grid_overview_open() {
+            return None;
+        }
+        let id = self.grid_focused_window_id()?;
+        self.has_minimized_window(&id).then_some(id)
+    }
+
     pub fn move_left(&mut self) -> bool {
+        if let Some(id) = self.grid_minimized_focus() {
+            return self
+                .scrolling
+                .move_minimized_column_in_direction(&id, ScrollDirection::Left);
+        }
         if self.floating_is_active.get() {
             self.floating.move_left();
             true
         } else {
-            self.scrolling.move_left()
+            let targets = self.move_targets();
+            self.scrolling.move_left(targets)
         }
     }
 
     pub fn move_right(&mut self) -> bool {
+        if let Some(id) = self.grid_minimized_focus() {
+            return self
+                .scrolling
+                .move_minimized_column_in_direction(&id, ScrollDirection::Right);
+        }
         if self.floating_is_active.get() {
             self.floating.move_right();
             true
         } else {
-            self.scrolling.move_right()
+            let targets = self.move_targets();
+            self.scrolling.move_right(targets)
         }
     }
 
     pub fn move_column_to_first(&mut self) {
+        if let Some(id) = self.grid_minimized_focus() {
+            self.scrolling.move_minimized_column_to(&id, 0);
+            return;
+        }
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.move_column_to_first();
+        let targets = self.move_targets();
+        self.scrolling.move_column_to_first(targets);
     }
 
     pub fn move_column_to_last(&mut self) {
+        if let Some(id) = self.grid_minimized_focus() {
+            let last = self.scrolling.columns().count().saturating_sub(1);
+            self.scrolling.move_minimized_column_to(&id, last);
+            return;
+        }
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.move_column_to_last();
+        let targets = self.move_targets();
+        self.scrolling.move_column_to_last(targets);
     }
 
     pub fn move_column_to_index(&mut self, index: usize) {
+        if let Some(id) = self.grid_minimized_focus() {
+            self.scrolling
+                .move_minimized_column_to(&id, index.saturating_sub(1));
+            return;
+        }
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.move_column_to_index(index);
+        let targets = self.move_targets();
+        self.scrolling.move_column_to_index(index, targets);
     }
 
     pub fn move_down(&mut self) -> bool {
+        // A minimized cell is alone in its placeholder column: there is nothing to move within it.
+        if self.grid_minimized_focus().is_some() {
+            return false;
+        }
         if self.floating_is_active.get() {
             self.floating.move_down();
             true
@@ -2108,6 +2224,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn move_up(&mut self) -> bool {
+        if self.grid_minimized_focus().is_some() {
+            return false;
+        }
         if self.floating_is_active.get() {
             self.floating.move_up();
             true
@@ -2149,10 +2268,16 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
+        if let Some(id) = self.grid_minimized_focus() {
+            self.scrolling
+                .move_minimized_column_in_direction(&id, direction);
+            return;
+        }
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.swap_window_in_direction(direction);
+        let targets = self.move_targets();
+        self.scrolling.swap_window_in_direction(direction, targets);
     }
 
     pub fn toggle_column_tabbed_display(&mut self) {
@@ -3113,6 +3238,15 @@ impl<W: LayoutElement> Workspace<W> {
                         );
                     }
                 }
+
+                // Mark minimized cells. Elements are queued front-to-back, so pushing the
+                // highlight after the cell's windows puts it behind them, where it shows as a
+                // frame around the thumbnail. Cells of other windows are a no-op here.
+                let padding = self.options.grid_overview.minimized_highlight.padding;
+                let loc = visual_pos - Point::from((padding, padding));
+                go.render_minimized_highlight(ctx.renderer, item.window_id(), loc, &mut |elem| {
+                    push(elem.into())
+                });
             };
 
             // Fading minimized windows render at the bottom while the grid closes, so they
@@ -3547,6 +3681,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Minimizes or restores a window in place.
     pub fn set_window_minimized(&mut self, id: &W::Id, minimize: bool) -> bool {
+        // Read before the layout changes: the grid focus is resolved through the items, and
+        // minimizing shifts those underneath it.
+        let prev_grid_focus = self.grid_focused_window_id();
+
         let in_floating = self.floating.has_window(id);
         let changed = if in_floating {
             self.floating.set_window_minimized(id, minimize)
@@ -3586,12 +3724,26 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         if self.is_grid_overview_open() {
-            let focus = (!minimize).then(|| id.clone());
+            // Minimizing leaves the grid focus alone: the cell is still right there, only marked
+            // now, and pressing minimize again restores it. Following the strip's activation
+            // instead — which minimizing hands to some neighbor — flung the focus across the grid.
+            // Restoring focuses the restored window, as activating it from the grid does.
+            let focus = if minimize {
+                prev_grid_focus
+            } else {
+                Some(id.clone())
+            };
+            // Minimizing and restoring insert/remove a column, which animates the neighbors in the
+            // strip. Nothing of the strip is on screen while the grid is up, but the grid reads the
+            // columns' render offsets to know where a cell flies back to, so a still-running offset
+            // would send the neighbors to their pre-change spots and then drag them back. Drop
+            // those animations; the grid's own rearrange animation shows the change.
+            //
             // Restoring a window preserves an in-progress grid focus animation. Clicking a
             // minimized grid cell starts the focus-boost animation first; resetting focus
             // without animation here would make the cell jump straight to its enlarged
             // focused size before the grid starts closing.
-            self.refresh_grid_overview_after_action(focus.as_ref(), false, Vec::new(), !minimize);
+            self.refresh_grid_overview_after_action(focus.as_ref(), true, Vec::new(), !minimize);
         } else if !minimize {
             // Restored windows appear with the open animation. With the grid overview open the
             // grid close animation carries the window into place instead.
@@ -3809,9 +3961,24 @@ impl<W: LayoutElement> Workspace<W> {
 
         match item {
             GridItem::Column { col_idx, .. } => {
-                if source_pos.x < edge {
+                // A minimized cell is a placeholder column. Merging a window into it would leave
+                // the minimized tile inside a visible column, which renders as a single cell, so
+                // the minimized window would lose its own cell and disappear from the grid. Only
+                // allow inserting a new column on either side of it.
+                let is_placeholder = self
+                    .scrolling
+                    .columns()
+                    .nth(*col_idx)
+                    .is_some_and(|col| !col.has_visible_tiles());
+                let left_edge = if is_placeholder {
+                    source_size.w / 2.
+                } else {
+                    edge
+                };
+
+                if source_pos.x < left_edge {
                     InsertPosition::NewColumn(*col_idx)
-                } else if source_pos.x > source_size.w - edge {
+                } else if is_placeholder || source_pos.x > source_size.w - edge {
                     InsertPosition::NewColumn(col_idx + 1)
                 } else {
                     let tile_idx = self.grid_in_column_tile_insert_idx(item, source_pos.y);

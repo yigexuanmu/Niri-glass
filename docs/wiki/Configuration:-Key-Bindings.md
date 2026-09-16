@@ -186,8 +186,13 @@ binds {
 }
 ```
 
-The minimized window stays in the layout as a placeholder and is shown in the grid overview.
-Use `unminimize-window` to restore the most recently minimized window, or `toggle-window-minimized` to switch between the two states.
+The minimized window stays in the layout as a placeholder and is shown in the [grid overview](./Grid-Overview.md#minimized-windows), marked with a colored frame.
+There it behaves like any other cell: other windows move onto its spot rather than jumping over it, and moving it around leaves it minimized.
+
+Inside the grid overview this bind doubles as a toggle: pressing it on a cell that is already minimized puts the window back into the layout, in place, and the grid stays open on it.
+The grid focus stays on that cell in both directions, so you can undo a minimize with a second press. (The window that the layout activates instead only matters once the grid closes.)
+
+Use `unminimize-window` to restore the most recently minimized window, or `toggle-window-minimized` to switch the focused window between the two states.
 
 #### `spawn`
 

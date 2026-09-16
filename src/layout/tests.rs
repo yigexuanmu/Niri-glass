@@ -1,6 +1,6 @@
 use std::cell::{Cell, OnceCell, RefCell};
 
-use niri_config::utils::{Flag, MergeWith as _};
+use niri_config::utils::Flag;
 use niri_config::workspace::WorkspaceName;
 use niri_config::{
     CenterFocusedColumn, FloatOrInt, OutputName, Struts, TabIndicatorLength, TabIndicatorPosition,
@@ -7903,6 +7903,303 @@ fn unminimize_last_restores_most_recent() {
     assert!(!layout.is_window_minimized(&2));
     assert!(layout.is_window_minimized(&1));
     assert_eq!(layout.last_minimized_window(), Some(1));
+}
+
+/// Three columns with the middle one minimized, plus its grid overview open and focused on
+/// `focus_id`.
+fn grid_with_minimized_middle(focus_id: usize) -> Layout<TestWindow> {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::MinimizeWindow(2),
+        Op::ToggleGridOverview,
+    ]);
+
+    assert!(layout.is_grid_overview_open());
+    for _ in 0..8 {
+        if layout.grid_focused_window_id() == Some(focus_id) {
+            break;
+        }
+        layout.focus_left();
+    }
+    for _ in 0..8 {
+        if layout.grid_focused_window_id() == Some(focus_id) {
+            break;
+        }
+        layout.focus_right();
+    }
+    assert_eq!(layout.grid_focused_window_id(), Some(focus_id));
+    layout.verify_invariants();
+
+    layout
+}
+
+#[track_caller]
+fn assert_window_order(layout: &Layout<TestWindow>, expected: [usize; 3]) {
+    let ws = layout.active_workspace().unwrap();
+    let ids: Vec<usize> = ws.windows().map(|w| *w.id()).collect();
+    assert_eq!(ids, expected);
+}
+
+#[test]
+fn grid_move_column_left_steps_over_minimized_cell() {
+    let mut layout = grid_with_minimized_middle(3);
+
+    // The minimized window has its own grid cell, so the move lands on it instead of jumping
+    // across to the next visible column.
+    check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
+    assert_window_order(&layout, [1, 3, 2]);
+    assert!(layout.is_window_minimized(&2));
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
+    assert_window_order(&layout, [3, 1, 2]);
+}
+
+#[test]
+fn grid_move_column_right_steps_over_minimized_cell() {
+    let mut layout = grid_with_minimized_middle(1);
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
+    assert_window_order(&layout, [2, 1, 3]);
+    assert!(layout.is_window_minimized(&2));
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
+    assert_window_order(&layout, [2, 3, 1]);
+}
+
+#[test]
+fn grid_move_column_to_first_and_index_count_minimized_cells() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::MinimizeWindow(1),
+        Op::ToggleGridOverview,
+    ]);
+    assert_eq!(layout.grid_focused_window_id(), Some(3));
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnToFirst]);
+    assert_window_order(&layout, [3, 1, 2]);
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnToIndex(2)]);
+    assert_window_order(&layout, [1, 3, 2]);
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnToLast]);
+    assert_window_order(&layout, [1, 2, 3]);
+}
+
+#[test]
+fn move_column_left_skips_minimized_outside_grid() {
+    // Without the grid overview, minimized windows are invisible, so moves jump over them.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::MinimizeWindow(2),
+        Op::FocusWindow(3),
+    ]);
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
+    assert_window_order(&layout, [3, 1, 2]);
+}
+
+#[test]
+fn grid_moving_minimized_cell_keeps_it_minimized() {
+    let mut layout = grid_with_minimized_middle(2);
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
+    assert_window_order(&layout, [2, 1, 3]);
+    assert!(layout.is_window_minimized(&2));
+    assert_eq!(layout.grid_focused_window_id(), Some(2));
+    // Moving it must not make it the active window either.
+    assert_ne!(
+        layout
+            .active_workspace()
+            .unwrap()
+            .active_window()
+            .map(|w| *w.id()),
+        Some(2)
+    );
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnLeft]);
+    assert_window_order(&layout, [2, 1, 3]);
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnToLast]);
+    assert_window_order(&layout, [1, 3, 2]);
+    assert!(layout.is_window_minimized(&2));
+
+    // There is nothing above or below a minimized window inside its own column.
+    check_ops_on_layout(&mut layout, [Op::MoveWindowUp, Op::MoveWindowDown]);
+    assert_window_order(&layout, [1, 3, 2]);
+    assert!(layout.is_window_minimized(&2));
+}
+
+#[test]
+fn grid_restore_does_not_leave_strip_move_animations() {
+    // The grid reads the columns' render offsets to know where a cell flies back to, so the
+    // insert animation from a restore must not be left running: the neighbors would fly to their
+    // pre-restore spots and then slide back.
+    let mut layout = grid_with_minimized_middle(3);
+    check_ops_on_layout(&mut layout, [Op::CompleteAnimations]);
+    check_ops_on_layout(&mut layout, [Op::UnminimizeWindow(2)]);
+
+    let ws = layout.active_workspace().unwrap();
+    for col in ws.scrolling().columns() {
+        assert_eq!(col.render_offset(), Point::from((0., 0.)));
+    }
+}
+
+#[test]
+fn grid_minimizing_leaves_the_grid_focus_alone() {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusWindow(2),
+        Op::ToggleGridOverview,
+    ]);
+    assert_eq!(layout.grid_focused_window_id(), Some(2));
+
+    // Minimizing the focused cell keeps the focus on it: the cell is still there, and pressing
+    // minimize again restores it. The strip's activation moves on, which is what the grid focus
+    // used to follow.
+    layout.set_window_minimized(&2, true);
+    layout.verify_invariants();
+    assert_eq!(layout.grid_focused_window_id(), Some(2));
+    assert!(layout.is_window_minimized(&2));
+    assert_ne!(
+        layout
+            .active_workspace()
+            .unwrap()
+            .active_window()
+            .map(|w| *w.id()),
+        Some(2)
+    );
+
+    // Minimizing some other window must not pull the focus over to it either.
+    layout.set_window_minimized(&3, true);
+    layout.verify_invariants();
+    assert_eq!(layout.grid_focused_window_id(), Some(2));
+
+    // Restoring does focus the window it restored.
+    layout.set_window_minimized(&3, false);
+    layout.verify_invariants();
+    assert_eq!(layout.grid_focused_window_id(), Some(3));
+}
+
+#[test]
+fn grid_unminimize_in_place_keeps_the_grid_open_and_focused() {
+    // Pressing minimize on an already-minimized cell restores it without activating, so the grid
+    // stays open on the window and the previously active window keeps the activation.
+    let mut layout = grid_with_minimized_middle(2);
+    let active_before = layout
+        .active_workspace()
+        .unwrap()
+        .active_window()
+        .map(|w| *w.id());
+
+    layout.unminimize_window(&2, false);
+    layout.verify_invariants();
+
+    assert!(!layout.is_window_minimized(&2));
+    assert!(layout.is_grid_overview_open());
+    assert_eq!(layout.grid_focused_window_id(), Some(2));
+    assert_window_order(&layout, [1, 2, 3]);
+    assert_eq!(
+        layout
+            .active_workspace()
+            .unwrap()
+            .active_window()
+            .map(|w| *w.id()),
+        active_before,
+        "restoring in place must not steal the activation"
+    );
+}
+
+#[test]
+fn grid_overview_picks_up_config_reloads() {
+    // The overview is created once and then lives as long as its workspace, so it used to keep
+    // serving the options it was first opened with: colors from an included file (matugen and
+    // friends rewrite those live), gap, padding and scales all froze at that point.
+    let mut layout = grid_with_minimized_middle(3);
+
+    let highlight = niri_config::GridMinimizedHighlight {
+        off: false,
+        color: niri_config::Color::from_rgba8_unpremul(1, 2, 3, 255),
+        urgent_color: niri_config::Color::from_rgba8_unpremul(4, 5, 6, 255),
+        padding: 12.,
+        corner_radius: 4.,
+    };
+    let options = Options {
+        grid_overview: niri_config::GridOverview {
+            gap: 64.,
+            minimized_highlight: highlight,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    layout.update_options(options);
+    layout.verify_invariants();
+
+    let go = layout.active_workspace().unwrap().grid_overview().unwrap();
+    assert_eq!(
+        go.options.grid_overview.minimized_highlight, highlight,
+        "the overview must serve the current highlight config"
+    );
+    assert_eq!(go.layout.gap, 64., "a new gap must re-lay out the grid");
+}
+
+#[test]
+fn grid_drop_onto_minimized_cell_never_merges_into_it() {
+    // Merging a window into the placeholder column would leave the minimized tile inside a
+    // visible column, which renders as one cell, so the minimized window would lose its own cell.
+    let mut layout = grid_with_minimized_middle(3);
+    check_ops_on_layout(&mut layout, [Op::CompleteAnimations]);
+
+    let ws = layout.active_workspace().unwrap();
+    let go = ws.grid_overview().unwrap();
+    let info = *go.find_grid_info(&2).unwrap();
+
+    for frac in [0.1, 0.3, 0.5, 0.7, 0.9] {
+        let pos =
+            info.target_pos + Point::from((info.target_size.w * frac, info.target_size.h / 2.));
+        let position = ws.grid_insert_position(pos).unwrap();
+        let expected = if frac < 0.5 {
+            InsertPosition::NewColumn(1)
+        } else {
+            InsertPosition::NewColumn(2)
+        };
+        assert_eq!(position, expected, "at x fraction {frac}");
+    }
 }
 
 #[test]

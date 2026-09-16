@@ -2,9 +2,12 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use niri_config::animations::Kind;
+use niri_config::CornerRadius;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::{Animation, Clock, LayoutElement, Options, OverviewProgress};
+use crate::render_helpers::renderer::NiriRenderer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridDirection {
@@ -122,6 +125,11 @@ pub struct GridOverview<W: LayoutElement> {
     /// windows stay visible above the source grid they are crossing.
     pub flying_in_windows: Vec<W::Id>,
     added_window_ids: Vec<W::Id>,
+    /// Filled highlights drawn behind the cells of minimized windows.
+    ///
+    /// They live here rather than on the tiles because they are sized in screen space: a marker
+    /// that scaled with the cell would get thinner the more windows the grid shows.
+    minimized_highlights: Vec<MinimizedHighlight<W>>,
     /// col_idx → tile_idx for Column items that have multiple tiles.
     pub column_tile_focus: Vec<(usize, usize)>,
     pub clock: Clock,
@@ -148,10 +156,20 @@ impl<W: LayoutElement> GridOverview<W> {
             grabbed_window: None,
             flying_in_windows: Vec::new(),
             added_window_ids: Vec::new(),
+            minimized_highlights: Vec::new(),
             column_tile_focus: Vec::new(),
             clock,
             options,
         }
+    }
+
+    /// Picks up a new config.
+    ///
+    /// The overview is created once and then lives as long as its workspace, so without this it
+    /// would keep serving whatever options were in effect when it was first opened: gap, padding,
+    /// scales, animations and the minimized highlight would all freeze at that point.
+    pub(super) fn update_config(&mut self, options: Rc<Options>) {
+        self.options = options;
     }
 
     pub fn is_fully_open(&self) -> bool {
@@ -787,6 +805,115 @@ impl<W: LayoutElement> GridOverview<W> {
         }
     }
 
+    /// Updates the highlights drawn behind minimized cells.
+    ///
+    /// `entries` carries the already-padded on-screen size of every minimized window's cell and
+    /// whether that window is urgent. Rings are kept across frames so their buffers (and with
+    /// them, damage tracking) stay stable.
+    pub(super) fn update_minimized_highlights(
+        &mut self,
+        entries: &[MinimizedHighlightEntry<W>],
+        scale: f64,
+    ) {
+        let config = self.options.grid_overview.minimized_highlight;
+        if config.off || entries.is_empty() {
+            self.minimized_highlights.clear();
+            return;
+        }
+
+        // The marker fades in and out with the grid, like the minimized thumbnails themselves.
+        let grid_alpha = self.progress_value().clamp(0., 1.);
+        // An easing, not the window_movement spring: a spring starts from rest, so the first
+        // ~200ms sit under 6% opacity and the frame reads as popping in late. An ease-out moves
+        // right away and settles, which is what a fade should feel like. Global animation
+        // settings still apply: `off` here, and slowdown through the clock.
+        let fade_config = niri_config::Animation {
+            off: self.options.animations.off,
+            kind: niri_config::animations::Kind::Easing(niri_config::animations::EasingParams {
+                duration_ms: 200,
+                curve: niri_config::animations::Curve::EaseOutQuad,
+            }),
+        };
+
+        let mut old = std::mem::take(&mut self.minimized_highlights);
+        for entry in entries {
+            let id = &entry.window;
+            let target = if entry.is_minimized { 1. } else { 0. };
+
+            let mut highlight = match old.iter().position(|h| &h.window == id) {
+                Some(idx) => old.swap_remove(idx),
+                // Nothing to fade out for a window that never had a highlight.
+                None if target == 0. => continue,
+                None => MinimizedHighlight {
+                    window: id.clone(),
+                    ring: FocusRing::new(niri_config::FocusRing {
+                        off: false,
+                        width: 0.,
+                        active_gradient: None,
+                        urgent_gradient: None,
+                        ..Default::default()
+                    }),
+                    fade: Animation::new(self.clock.clone(), 0., 1., 0., fade_config),
+                },
+            };
+
+            // Minimizing or restoring while the grid is up would otherwise pop the frame in and
+            // out; fade it instead, over the same animation that carries the cells themselves.
+            if highlight.fade.to() != target {
+                highlight.fade =
+                    highlight
+                        .fade
+                        .restarted(highlight.fade.clamped_value(), target, 0.);
+            }
+
+            let fade = highlight.fade.clamped_value().clamp(0., 1.);
+            if target == 0. && (fade <= 0.0001 || highlight.fade.is_clamped_done()) {
+                continue;
+            }
+
+            let mut ring_config = *highlight.ring.config();
+            ring_config.active_color = config.color;
+            ring_config.urgent_color = config.urgent_color;
+            highlight.ring.update_config(ring_config);
+            highlight.ring.update_render_elements(
+                entry.size,
+                true,
+                false,
+                entry.is_urgent,
+                Rectangle::default(),
+                CornerRadius::from(config.corner_radius as f32),
+                scale,
+                (grid_alpha * fade) as f32,
+            );
+
+            self.minimized_highlights.push(highlight);
+        }
+    }
+
+    fn minimized_highlights_animating(&self) -> bool {
+        self.minimized_highlights
+            .iter()
+            .any(|h| !h.fade.is_clamped_done())
+    }
+
+    pub(super) fn render_minimized_highlight(
+        &self,
+        renderer: &mut impl NiriRenderer,
+        window: &W::Id,
+        location: Point<f64, Logical>,
+        push: &mut dyn FnMut(FocusRingRenderElement),
+    ) {
+        let Some(highlight) = self
+            .minimized_highlights
+            .iter()
+            .find(|h| &h.window == window)
+        else {
+            return;
+        };
+
+        highlight.ring.render(renderer, location, push);
+    }
+
     pub(super) fn record_added_window(&mut self, id: W::Id) {
         if !self.added_window_ids.contains(&id) {
             self.added_window_ids.push(id);
@@ -897,6 +1024,7 @@ impl<W: LayoutElement> GridOverview<W> {
         self.progress.as_ref().map_or(false, |p| p.is_animation())
             || self.rearrange_anim.is_some()
             || self.focus_boost_anim.is_some()
+            || self.minimized_highlights_animating()
     }
 }
 
@@ -1121,6 +1249,24 @@ impl<W: LayoutElement> GridLayout<W> {
     fn blend_scale(uniform_scale: f64, independent_scale: f64, independent_weight: f64) -> f64 {
         uniform_scale * (independent_scale / uniform_scale).powf(independent_weight)
     }
+}
+
+/// One grid cell, as input to [`GridOverview::update_minimized_highlights`].
+pub(super) struct MinimizedHighlightEntry<W: LayoutElement> {
+    pub window: W::Id,
+    /// On-screen size of the cell, already grown by the configured padding.
+    pub size: Size<f64, Logical>,
+    pub is_urgent: bool,
+    pub is_minimized: bool,
+}
+
+/// A highlight drawn behind the cell of a minimized window, with its own fade.
+#[derive(Debug)]
+struct MinimizedHighlight<W: LayoutElement> {
+    window: W::Id,
+    ring: FocusRing,
+    /// 0 while absent, 1 while fully shown; a fade-out is dropped once it reaches 0.
+    fade: Animation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

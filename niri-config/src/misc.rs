@@ -604,6 +604,63 @@ pub struct GridOverview {
     pub min_scale: f64,
     pub focused_column_scale: f64,
     pub grid_all_monitors: bool,
+    pub default_mod_action: bool,
+    pub minimized_highlight: GridMinimizedHighlight,
+}
+
+/// Highlight drawn behind the grid cell of a minimized window.
+///
+/// Minimized windows only exist in the Grid Overview, where they otherwise look exactly like
+/// normal windows. The highlight extends past the cell on every side, so it reads as a colored
+/// frame around the thumbnail without touching the window's own opacity.
+///
+/// Mirrors the recent-windows [`MruHighlight`](crate::recent_windows::MruHighlight), values
+/// included.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridMinimizedHighlight {
+    pub off: bool,
+    pub color: Color,
+    pub urgent_color: Color,
+    /// How far the highlight extends past the cell, in logical pixels.
+    pub padding: f64,
+    pub corner_radius: f64,
+}
+
+impl Default for GridMinimizedHighlight {
+    fn default() -> Self {
+        Self {
+            off: false,
+            // Recent-windows' grey, at 70% alpha so the frame blends into the backdrop.
+            color: Color::from_rgba8_unpremul(153, 153, 153, 179),
+            urgent_color: Color::new_unpremul(1., 0.6, 0.6, 1.),
+            // Recent-windows uses 30, which is sized for full-screen previews. Grid cells sit a
+            // `gap` apart (16 by default), so the frame has to stay inside half of that.
+            padding: 6.,
+            corner_radius: 0.,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+pub struct GridMinimizedHighlightPart {
+    #[knuffel(child)]
+    pub off: bool,
+    #[knuffel(child)]
+    pub color: Option<Color>,
+    #[knuffel(child)]
+    pub urgent_color: Option<Color>,
+    #[knuffel(child, unwrap(argument))]
+    pub padding: Option<FloatOrInt<0, 65535>>,
+    #[knuffel(child, unwrap(argument))]
+    pub corner_radius: Option<FloatOrInt<0, 65535>>,
+}
+
+impl MergeWith<GridMinimizedHighlightPart> for GridMinimizedHighlight {
+    fn merge_with(&mut self, part: &GridMinimizedHighlightPart) {
+        self.off |= part.off;
+        merge_clone!((self, part), color, urgent_color);
+        merge!((self, part), padding, corner_radius);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -639,6 +696,8 @@ impl Default for GridOverview {
             min_scale: 0.08,
             focused_column_scale: 1.04,
             grid_all_monitors: true,
+            default_mod_action: true,
+            minimized_highlight: GridMinimizedHighlight::default(),
         }
     }
 }
@@ -774,6 +833,10 @@ pub struct GridOverviewPart {
     pub focused_column_scale: Option<FloatOrInt<1, 2>>,
     #[knuffel(child, unwrap(argument))]
     pub grid_all_monitors: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub default_mod_action: Option<bool>,
+    #[knuffel(child)]
+    pub minimized_highlight: Option<GridMinimizedHighlightPart>,
 }
 
 impl MergeWith<GridOverviewPart> for GridOverview {
@@ -793,6 +856,10 @@ impl MergeWith<GridOverviewPart> for GridOverview {
         if let Some(grid_all_monitors) = part.grid_all_monitors {
             self.grid_all_monitors = grid_all_monitors;
         }
+        if let Some(default_mod_action) = part.default_mod_action {
+            self.default_mod_action = default_mod_action;
+        }
+        merge!((self, part), minimized_highlight);
     }
 }
 

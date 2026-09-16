@@ -360,6 +360,43 @@ grid-overview {
 }
 ```
 
+#### `minimized-highlight`
+
+<sup>Since: 26.04 (fork)</sup>
+
+Minimized windows are only visible in the Grid Overview, where they otherwise look like any other window.
+This setting controls the frame drawn around their cells so you can tell them apart.
+
+The highlight is a filled rectangle drawn behind the cell, extending `padding` logical pixels past it on every side, so the window's own opacity and background effects are untouched.
+Its thickness does not change with the grid scale.
+The knobs mirror the [recent-windows highlight](./Configuration:-Recent-Windows.md), and so do the colors; only `padding` is smaller, since it has to fit inside the `gap` between cells.
+
+Colors may carry an alpha channel, which blends the frame into the backdrop; the default is 70% opaque.
+Alpha here only affects the frame — the window's own opacity and background effects are untouched.
+
+```kdl
+grid-overview {
+    minimized-highlight {
+        color "#999999b3"
+        urgent-color "#ff9999"
+        padding 6
+        corner-radius 0
+    }
+}
+```
+
+`color` takes any CSS color, so these all give the same 70% grey: `"#999999b3"`, `"rgba(153, 153, 153, 0.7)"`, or the unquoted 4-argument RGBA form `color 153 153 153 179`.
+
+Use `off` to remove the marker:
+
+```kdl
+grid-overview {
+    minimized-highlight {
+        off
+    }
+}
+```
+
 #### `default-mod-action`
 
 <sup>Since: 26.04 (fork)</sup>

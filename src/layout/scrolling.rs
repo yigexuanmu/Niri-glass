@@ -319,6 +319,20 @@ pub enum ScrollDirection {
     Right,
 }
 
+/// Which columns a move operation may land on.
+///
+/// Minimized windows stay in the strip as zero-width placeholder columns. They are invisible in
+/// the normal strip, so moves jump over them ([`MoveTargets::Interactive`]). The grid overview
+/// gives every column its own cell, so there a move has to step over them one cell at a time
+/// ([`MoveTargets::AllColumns`]), otherwise a window would visibly skip a grid cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveTargets {
+    /// Only interactive (non-placeholder) columns.
+    Interactive,
+    /// Every column, placeholders included.
+    AllColumns,
+}
+
 #[derive(Debug)]
 struct MoveAnimation {
     anim: Animation,
@@ -2103,6 +2117,44 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .nth(index)
     }
 
+    /// Nearest move target strictly left of `from`.
+    fn prev_move_target_column(&self, from: usize, targets: MoveTargets) -> Option<usize> {
+        match targets {
+            MoveTargets::AllColumns => from.checked_sub(1),
+            MoveTargets::Interactive => self.prev_interactive_column(from),
+        }
+    }
+
+    /// Nearest move target strictly right of `from`.
+    fn next_move_target_column(&self, from: usize, targets: MoveTargets) -> Option<usize> {
+        match targets {
+            MoveTargets::AllColumns => (from + 1 < self.columns.len()).then_some(from + 1),
+            MoveTargets::Interactive => self.next_interactive_column(from),
+        }
+    }
+
+    fn first_move_target_column(&self, targets: MoveTargets) -> Option<usize> {
+        match targets {
+            MoveTargets::AllColumns => (!self.columns.is_empty()).then_some(0),
+            MoveTargets::Interactive => self.first_interactive_column(),
+        }
+    }
+
+    fn last_move_target_column(&self, targets: MoveTargets) -> Option<usize> {
+        match targets {
+            MoveTargets::AllColumns => self.columns.len().checked_sub(1),
+            MoveTargets::Interactive => self.last_interactive_column(),
+        }
+    }
+
+    /// Real index of the `index`-th (0-based) move target.
+    fn nth_move_target_column(&self, index: usize, targets: MoveTargets) -> Option<usize> {
+        match targets {
+            MoveTargets::AllColumns => (index < self.columns.len()).then_some(index),
+            MoveTargets::Interactive => self.nth_interactive_column(index),
+        }
+    }
+
     pub fn focus_left(&mut self) -> bool {
         let Some(idx) = self.prev_interactive_column(self.active_column_idx) else {
             return false;
@@ -2226,10 +2278,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.columns[self.active_column_idx].focus_bottom()
     }
 
-    pub fn move_column_to_index(&mut self, index: usize) {
-        let last = self.last_interactive_column();
+    pub fn move_column_to_index(&mut self, index: usize, targets: MoveTargets) {
+        let last = self.last_move_target_column(targets);
         let Some(target) = self
-            .nth_interactive_column(index.saturating_sub(1))
+            .nth_move_target_column(index.saturating_sub(1), targets)
             .or(last)
         else {
             return;
@@ -2259,14 +2311,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let new_col_x = self.column_x(new_idx);
         self.columns[new_idx].animate_move_x_from(current_col_x - new_col_x);
 
-        // All columns in between moved by the width of the column that we just moved.
+        // All columns in between moved by the width of the column that we just moved. Except
+        // placeholder columns: they take no width in the strip, so crossing one moves nothing.
         let others_x_offset = next_col_x - current_col_x;
         if self.active_column_idx < new_idx {
-            for col in &mut self.columns[self.active_column_idx..new_idx] {
+            for col in self.columns[self.active_column_idx..new_idx]
+                .iter_mut()
+                .filter(|col| col.has_visible_tiles())
+            {
                 col.animate_move_x_from(others_x_offset);
             }
         } else {
-            for col in &mut self.columns[new_idx + 1..=self.active_column_idx] {
+            for col in self.columns[new_idx + 1..=self.active_column_idx]
+                .iter_mut()
+                .filter(|col| col.has_visible_tiles())
+            {
                 col.animate_move_x_from(-others_x_offset);
             }
         }
@@ -2392,33 +2451,102 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         true
     }
 
-    pub fn move_left(&mut self) -> bool {
-        // Move relative to the interactive projection: placeholders are ignored and stay put.
-        let Some(target) = self.prev_interactive_column(self.active_column_idx) else {
+    pub fn move_left(&mut self, targets: MoveTargets) -> bool {
+        let Some(target) = self.prev_move_target_column(self.active_column_idx, targets) else {
             return false;
         };
         self.move_column_to(target);
         true
     }
 
-    pub fn move_right(&mut self) -> bool {
-        let Some(target) = self.next_interactive_column(self.active_column_idx) else {
+    pub fn move_right(&mut self, targets: MoveTargets) -> bool {
+        let Some(target) = self.next_move_target_column(self.active_column_idx, targets) else {
             return false;
         };
         self.move_column_to(target);
         true
     }
 
-    pub fn move_column_to_first(&mut self) {
-        if let Some(target) = self.first_interactive_column() {
+    pub fn move_column_to_first(&mut self, targets: MoveTargets) {
+        if let Some(target) = self.first_move_target_column(targets) {
             self.move_column_to(target);
         }
     }
 
-    pub fn move_column_to_last(&mut self) {
-        if let Some(target) = self.last_interactive_column() {
+    pub fn move_column_to_last(&mut self, targets: MoveTargets) {
+        if let Some(target) = self.last_move_target_column(targets) {
             self.move_column_to(target);
         }
+    }
+
+    /// Index of the placeholder column that holds this minimized window, if it is in one.
+    fn placeholder_column_of(&self, window: &W::Id) -> Option<usize> {
+        let (col_idx, _) = self.position_of(window)?;
+        (!self.columns[col_idx].has_visible_tiles()).then_some(col_idx)
+    }
+
+    /// Moves the placeholder column of a minimized window one column in `direction`.
+    ///
+    /// A minimized window can never be the active column, so its cell cannot be reordered through
+    /// the usual active-column moves. This keeps it minimized instead of restoring it first.
+    pub fn move_minimized_column_in_direction(
+        &mut self,
+        window: &W::Id,
+        direction: ScrollDirection,
+    ) -> bool {
+        let Some(from) = self.placeholder_column_of(window) else {
+            return false;
+        };
+        let to = match direction {
+            ScrollDirection::Left => from.checked_sub(1),
+            ScrollDirection::Right => (from + 1 < self.columns.len()).then_some(from + 1),
+        };
+        let Some(to) = to else {
+            return false;
+        };
+        self.move_placeholder_column(from, to);
+        true
+    }
+
+    /// Moves the placeholder column of a minimized window to `new_idx`, clamped to the strip.
+    pub fn move_minimized_column_to(&mut self, window: &W::Id, new_idx: usize) -> bool {
+        let Some(from) = self.placeholder_column_of(window) else {
+            return false;
+        };
+        let new_idx = new_idx.min(self.columns.len() - 1);
+        if from == new_idx {
+            return false;
+        }
+        self.move_placeholder_column(from, new_idx);
+        true
+    }
+
+    /// Reorders a placeholder (all-minimized) column.
+    ///
+    /// Placeholder columns take no width in the strip, so nothing there visibly moves: neither the
+    /// view offset nor any move animation needs adjusting. Only the grid overview shows the change,
+    /// and its rearrange animation carries the cell to its new spot.
+    fn move_placeholder_column(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+
+        let mut column = self.columns.remove(from);
+        let data = self.data.remove(from);
+        cancel_resize_for_column(&mut self.interactive_resize, &mut column);
+        self.columns.insert(to, column);
+        self.data.insert(to, data);
+
+        // Keep the activation on the same column.
+        self.active_column_idx = if self.active_column_idx == from {
+            to
+        } else if from < to && (from..=to).contains(&self.active_column_idx) {
+            self.active_column_idx - 1
+        } else if to < from && (to..=from).contains(&self.active_column_idx) {
+            self.active_column_idx + 1
+        } else {
+            self.active_column_idx
+        };
     }
 
     pub fn move_down(&mut self) -> bool {
@@ -2665,7 +2793,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let Some(source_column_idx) = self.next_interactive_column(target_column_idx) else {
             return;
         };
-        let Some(source_tile_idx) = self.columns[source_column_idx].visible_tile_indices().next()
+        let Some(source_tile_idx) = self.columns[source_column_idx]
+            .visible_tile_indices()
+            .next()
         else {
             return;
         };
@@ -2729,7 +2859,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         new_col.tiles[0].animate_move_from(offset);
     }
 
-    pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
+    pub fn swap_window_in_direction(&mut self, direction: ScrollDirection, targets: MoveTargets) {
         if self.columns.is_empty() {
             return;
         }
@@ -2745,13 +2875,28 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        // Swap with the adjacent interactive column; placeholder columns are invisible to
-        // window operations. At the first (resp. last) interactive column the operation is
+        // Swap with the adjacent column. At the first (resp. last) target column the operation is
         // a no-op, like `consume_or_expel_window_left` (resp. `_right`).
-        let target_column_idx = match direction {
-            ScrollDirection::Left => self.prev_interactive_column(source_column_idx),
-            ScrollDirection::Right => self.next_interactive_column(source_column_idx),
+        let mut target_column_idx = match direction {
+            ScrollDirection::Left => self.prev_move_target_column(source_column_idx, targets),
+            ScrollDirection::Right => self.next_move_target_column(source_column_idx, targets),
         };
+
+        // A placeholder column has no visible tile to swap with, and moving its minimized tile
+        // into a visible column would hide it from the grid. A single-tile source exchanges whole
+        // columns below, just like `move_left`/`move_right`; anything else steps over it, as in
+        // the normal strip.
+        if let Some(idx) = target_column_idx {
+            if !self.columns[idx].has_visible_tiles()
+                && self.columns[source_column_idx].tiles.len() > 1
+            {
+                target_column_idx = match direction {
+                    ScrollDirection::Left => self.prev_interactive_column(idx),
+                    ScrollDirection::Right => self.next_interactive_column(idx),
+                };
+            }
+        }
+
         let Some(target_column_idx) = target_column_idx else {
             return;
         };

@@ -25,3 +25,7 @@ path = "src/bin/grid_move_headless.rs"
 [[bin]]
 name = "grid-issues-headless"
 path = "src/bin/grid_issues_headless.rs"
+
+[[bin]]
+name = "grid-minimized-headless"
+path = "src/bin/grid_minimized_headless.rs"

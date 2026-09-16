@@ -698,6 +698,49 @@ mod tests {
     }
 
     #[test]
+    fn grid_overview_minimized_highlight_parses() {
+        let config = Config::parse_mem(
+            r##"
+            grid-overview {
+                minimized-highlight {
+                    color "#ff0000"
+                    urgent-color "#00ff00"
+                    padding 12
+                    corner-radius 4
+                }
+            }
+            "##,
+        )
+        .unwrap();
+
+        let highlight = config.grid_overview.minimized_highlight;
+        assert!(!highlight.off);
+        assert_eq!(highlight.color, Color::from_rgba8_unpremul(255, 0, 0, 255));
+        assert_eq!(
+            highlight.urgent_color,
+            Color::from_rgba8_unpremul(0, 255, 0, 255)
+        );
+        assert_eq!(highlight.padding, 12.);
+        assert_eq!(highlight.corner_radius, 4.);
+    }
+
+    #[test]
+    fn grid_overview_minimized_highlight_off_parses() {
+        let config = Config::parse_mem(
+            r##"
+            grid-overview {
+                minimized-highlight {
+                    off
+                }
+            }
+            "##,
+        )
+        .unwrap();
+
+        assert!(config.grid_overview.minimized_highlight.off);
+    }
+
+    #[test]
     fn grid_overview_grid_all_monitors_parses() {
         let config = Config::parse_mem(
             r#"
@@ -1955,6 +1998,24 @@ mod tests {
                 min_scale: 0.08,
                 focused_column_scale: 1.04,
                 grid_all_monitors: true,
+                default_mod_action: true,
+                minimized_highlight: GridMinimizedHighlight {
+                    off: false,
+                    color: Color {
+                        r: 0.6,
+                        g: 0.6,
+                        b: 0.6,
+                        a: 0.7019608,
+                    },
+                    urgent_color: Color {
+                        r: 1.0,
+                        g: 0.6,
+                        b: 0.6,
+                        a: 1.0,
+                    },
+                    padding: 6.0,
+                    corner_radius: 0.0,
+                },
             },
             magnifier: Magnifier {
                 off: false,
@@ -2059,6 +2120,7 @@ mod tests {
                     open_floating: Some(
                         false,
                     ),
+                    open_minimized: None,
                     open_focused: Some(
                         true,
                     ),
