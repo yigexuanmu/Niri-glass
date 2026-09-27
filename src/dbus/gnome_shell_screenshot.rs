@@ -3,9 +3,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use niri_ipc::PickedColor;
-use zbus::fdo::{self};
 use zbus::zvariant::OwnedValue;
-use zbus::{interface, zvariant};
+use zbus::{fdo, interface, zvariant};
 
 use super::{request_name, Start};
 use crate::ui::screenshot_ui::{

@@ -199,7 +199,7 @@ use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
     center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
     logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
-    send_scale_transform, write_png_rgba8, xwayland,
+    send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
@@ -468,6 +468,9 @@ pub struct Niri {
 
     #[cfg(feature = "xdp-gnome-screencast")]
     pub casting: Screencasting,
+
+    #[cfg(test)]
+    pub test_action_count: usize,
 }
 
 smithay::delegate_dispatch2!(State);
@@ -1372,7 +1375,7 @@ impl State {
             };
 
             let excl_focus_on_layer = |layer| {
-                layers.layers_on(layer).find_map(|surface| {
+                layers.layers_on(layer).rev().find_map(|surface| {
                     if surface.cached_state().keyboard_interactivity
                         != wlr_layer::KeyboardInteractivity::Exclusive
                     {
@@ -1390,7 +1393,7 @@ impl State {
             };
 
             let on_d_focus_on_layer = |layer| {
-                layers.layers_on(layer).find_map(|surface| {
+                layers.layers_on(layer).rev().find_map(|surface| {
                     let is_on_demand_surface =
                         Some(surface) == self.niri.layer_shell_on_demand_focus.as_ref();
                     is_on_demand_surface
@@ -1960,6 +1963,7 @@ impl State {
             let scale = config
                 .and_then(|c| c.scale)
                 .map(|s| s.0)
+                .or_else(|| winit_scale(output))
                 .unwrap_or_else(|| {
                     let size_mm = output.physical_properties().size;
                     let resolution = output.current_mode().unwrap().size;
@@ -3450,6 +3454,9 @@ impl Niri {
 
             #[cfg(feature = "xdp-gnome-screencast")]
             casting: screencasting,
+
+            #[cfg(test)]
+            test_action_count: 0,
         };
 
         // Apply cursor-effect configuration (initial values, including `enabled`).
@@ -3641,11 +3648,15 @@ impl Niri {
 
         let config = self.config.borrow();
         let c = config.outputs.find(name);
-        let scale = c.and_then(|c| c.scale).map(|s| s.0).unwrap_or_else(|| {
-            let size_mm = output.physical_properties().size;
-            let resolution = output.current_mode().unwrap().size;
-            guess_monitor_scale(size_mm, resolution)
-        });
+        let scale = c
+            .and_then(|c| c.scale)
+            .map(|s| s.0)
+            .or_else(|| winit_scale(&output))
+            .unwrap_or_else(|| {
+                let size_mm = output.physical_properties().size;
+                let resolution = output.current_mode().unwrap().size;
+                guess_monitor_scale(size_mm, resolution)
+            });
         let scale = closest_representable_scale(scale.clamp(0.1, 10.));
 
         let mut transform = panel_orientation(&output)
@@ -8060,24 +8071,97 @@ impl Niri {
         include_pointer: bool,
         path_reply: ScreenshotPathReplySender,
     ) -> anyhow::Result<()> {
+        use smithay::backend::renderer::{Bind as _, ExportMem as _};
+
+        use crate::render_helpers::copy_framebuffer;
+        use crate::render_helpers::texture::TextureRenderElement;
+
         let _span = tracy_client::span!("Niri::screenshot_all_outputs");
 
-        let outputs: Vec<_> = self.global_space.outputs().cloned().collect();
+        self.update_render_elements(None);
 
-        // FIXME: support multiple outputs, needs fixing multi-scale handling and cropping.
-        anyhow::ensure!(outputs.len() == 1);
+        // Screenshot with the highest scale among outputs.
+        let screenshot_scale = self
+            .global_space
+            .outputs()
+            .map(|output| output.current_scale().fractional_scale())
+            .max_by(f64::total_cmp)
+            .context("no outputs")?;
 
-        let output = outputs.into_iter().next().unwrap();
+        // Render each output to a separate texture.
+        //
+        // Rendering everything at once doesn't quite work because elements don't like rescaling
+        // (need to investigate this at some point), and even if it worked fine, it would result in
+        // various 1 px jank.
+        let mut textures = Vec::new();
+        for output in self.global_space.outputs() {
+            let loc = self.global_space.output_geometry(output).unwrap().loc;
 
-        self.screenshot_with_replies(
+            let size = output.current_mode().unwrap().size;
+            let transform = output.current_transform();
+            let size = transform.transform_size(size);
+
+            let scale = output.current_scale().fractional_scale();
+            let ctx = RenderCtx {
+                renderer,
+                target: RenderTarget::ScreenCapture,
+                intent: RenderIntent::Normal,
+                xray: None,
+            };
+            let elements = self.render_to_vec(ctx, output, include_pointer);
+
+            let (texture, _sync) = render_to_texture(
+                renderer,
+                size,
+                Scale::from(scale),
+                Transform::Normal,
+                Fourcc::Abgr8888,
+                elements.iter().rev(),
+            )
+            .context("error rendering")?;
+
+            let buffer = TextureBuffer::from_texture(
+                renderer,
+                texture,
+                scale,
+                Transform::Normal,
+                Vec::new(),
+            );
+            let elem = TextureRenderElement::from_texture_buffer(
+                buffer,
+                loc.to_f64(),
+                1.,
+                None,
+                None,
+                Kind::Unspecified,
+            );
+
+            textures.push(elem);
+        }
+
+        // Now combine everything together.
+        let (mut texture, _sync, geo) = render_to_encompassing_texture(
             renderer,
-            &output,
-            true,
-            include_pointer,
-            None,
-            None,
-            Some(path_reply),
+            Scale::from(screenshot_scale),
+            Transform::Normal,
+            Fourcc::Abgr8888,
+            &textures,
         )
+        .context("error rendering")?;
+
+        // FIXME: unfortunate second bind.
+        let target = renderer
+            .bind(&mut texture)
+            .context("error binding texture")?;
+        let mapping = copy_framebuffer(renderer, &target, Fourcc::Abgr8888)
+            .context("error copying framebuffer")?;
+        let copy = renderer
+            .map_texture(&mapping)
+            .context("error mapping texture")?;
+        let pixels = copy.to_vec();
+
+        self.save_screenshot_with_replies(geo.size, pixels, true, None, None, Some(path_reply))
+            .context("error saving screenshot")
     }
 
     pub fn is_locked(&self) -> bool {

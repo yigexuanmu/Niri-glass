@@ -13,14 +13,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context as _;
 use futures_util::future::{select, Either};
 use futures_util::StreamExt;
-use zbus::fdo::{self, RequestNameFlags};
 use zbus::message::Header;
 use zbus::names::{OwnedUniqueName, UniqueName};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{
     DeserializeDict, NoneValue, OwnedObjectPath, OwnedValue, SerializeDict, Type, Value,
 };
-use zbus::{interface, ObjectServer};
+use zbus::{fdo, interface, ObjectServer};
 
 use super::gnome_shell_screenshot::{file_uri, ScreenshotToNiri};
 use super::mutter_screen_cast::{CursorMode, NodeIdSink, ScreenCastToNiri, StreamTargetId};
@@ -28,6 +27,7 @@ use super::niri_portal_screen_cast::{
     validate_selection, PickSourcesReply, PickSourcesRequest, PickerCursorMode, PickerOptions,
     PickerPersistMode, PickerRequestId, PickerSourceTypes,
 };
+use super::request_name;
 use crate::backend::IpcOutputMap;
 use crate::ui::screenshot_ui::ScreenshotPortalError;
 use crate::utils::{CastSessionId, CastStreamId};
@@ -951,6 +951,7 @@ pub fn start(
     to_niri_cast: calloop::channel::Sender<ScreenCastToNiri>,
     to_niri_screenshot: calloop::channel::Sender<ScreenshotToNiri>,
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
+    monitor: bool,
 ) -> anyhow::Result<(zbus::blocking::Connection, PortalCastMap)> {
     let cast_paths = PortalCastMap::default();
     let shared = Arc::new(Shared {
@@ -963,15 +964,11 @@ pub fn start(
     });
 
     let conn = zbus::blocking::Connection::session()?;
-    let flags = RequestNameFlags::AllowReplacement
-        | RequestNameFlags::ReplaceExisting
-        | RequestNameFlags::DoNotQueue;
-
     conn.object_server()
         .at(PORTAL_PATH, ScreenCastBackend(shared.clone()))?;
     conn.object_server()
         .at(PORTAL_PATH, ScreenshotBackend(shared.clone()))?;
-    conn.request_name_with_flags(BUS_NAME, flags)?;
+    request_name(&conn, BUS_NAME, monitor)?;
 
     let async_conn = conn.inner().clone();
     let future = async move {

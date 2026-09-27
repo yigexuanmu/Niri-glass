@@ -397,7 +397,6 @@ impl Start for ScreenCast {
         let portal = self.portal.clone();
         let sessions = self.sessions.clone();
         let conn = zbus::blocking::Connection::session()?;
-
         conn.object_server()
             .at("/org/gnome/Mutter/ScreenCast", self)?;
         conn.object_server()

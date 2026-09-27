@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::{mem, slice};
 
-use anyhow::{ensure, Context as _};
+use anyhow::{bail, ensure, Context as _};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::RegistrationToken;
 use pipewire::context::ContextRc;
@@ -36,7 +36,6 @@ use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::drm::DrmDeviceFd;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
 use smithay::backend::renderer::element::{Element, RenderElement, RenderElementStates};
@@ -51,8 +50,7 @@ use smithay::reexports::rustix::fd::OwnedFd;
 use smithay::reexports::rustix::fs::{
     fcntl_add_seals, ftruncate, memfd_create, MemfdFlags, SealFlags,
 };
-use smithay::reexports::rustix::mm::{mmap, munmap, MapFlags, ProtFlags};
-use smithay::utils::{Logical, Physical, Point, Scale, Size, Transform};
+use smithay::utils::{DeviceFd, Logical, Physical, Point, Scale, Size, Transform};
 
 use crate::dbus::mutter_screen_cast::{CursorMode, NodeIdSink};
 use crate::niri::{CastTarget, State};
@@ -63,6 +61,9 @@ use crate::render_helpers::{
 use crate::screencasting::CastRenderElement;
 use crate::utils::{get_monotonic_time, CastSessionId, CastStreamId};
 
+mod shm_mapping;
+use shm_mapping::ShmMapping;
+
 // Give a 0.1 ms allowance for presentation time errors.
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 const SHM_BLOCKS: usize = 1;
@@ -70,8 +71,8 @@ const SHM_BYTES_PER_PIXEL: usize = 4;
 
 const CURSOR_FORMAT: spa_video_format = SPA_VIDEO_FORMAT_BGRA;
 const CURSOR_BPP: u32 = 4;
-const CURSOR_WIDTH: u32 = 384;
-const CURSOR_HEIGHT: u32 = 384;
+const CURSOR_WIDTH: u32 = 1024;
+const CURSOR_HEIGHT: u32 = 1024;
 const CURSOR_BITMAP_SIZE: usize = (CURSOR_WIDTH * CURSOR_HEIGHT * CURSOR_BPP) as usize;
 const CURSOR_META_SIZE: usize =
     mem::size_of::<spa_meta_cursor>() + mem::size_of::<spa_meta_bitmap>() + CURSOR_BITMAP_SIZE;
@@ -104,7 +105,8 @@ pub struct Cast {
     formats: FormatSet,
     offer_alpha: bool,
     cursor_mode: CursorMode,
-    pub last_frame_time: Duration,
+    last_frame_time: Duration,
+    last_frame_interval: Duration,
     scheduled_redraw: Option<RegistrationToken>,
     // Incremented once per successful frame, stored in buffer meta.
     sequence_counter: u64,
@@ -399,8 +401,7 @@ impl PipeWire {
     #[allow(clippy::too_many_arguments)]
     pub fn start_cast(
         &self,
-        gbm: GbmDevice<DrmDeviceFd>,
-        formats: FormatSet,
+        gbm: Option<(GbmDevice<DeviceFd>, FormatSet)>,
         session_id: CastSessionId,
         stream_id: CastStreamId,
         target: CastTarget,
@@ -416,13 +417,13 @@ impl PipeWire {
         let to_niri_ = self.to_niri.clone();
         let stop_cast = move || {
             if let Err(err) = to_niri_.send(PwToNiri::StopCast { session_id }) {
-                warn!(%session_id, "error sending StopCast to niri: {err:?}");
+                warn!("error sending StopCast to niri: {err:?}");
             }
         };
         let to_niri_ = self.to_niri.clone();
         let redraw = move || {
             if let Err(err) = to_niri_.send(PwToNiri::Redraw { stream_id }) {
-                warn!(%stream_id, "error sending Redraw to niri: {err:?}");
+                warn!("error sending Redraw to niri: {err:?}");
             }
         };
         let redraw_ = redraw.clone();
@@ -443,6 +444,13 @@ impl PipeWire {
         }
 
         let pending_size = Size::from((size.w as u32, size.h as u32));
+
+        let (gbm, formats) = if let Some((gbm, formats)) = gbm {
+            (Some(gbm), formats)
+        } else {
+            debug!("no gbm device; advertising only shm formats");
+            (None, FormatSet::default())
+        };
 
         // Like in good old wayland-rs times...
         let inner = Rc::new(RefCell::new(CastInner {
@@ -587,7 +595,11 @@ impl PipeWire {
                             {
                                 debug!("fixating the modifier");
 
-                                // gbm is always Some when DMA negotiation proceeds
+                                let Some(gbm) = &gbm else {
+                                    error!("negotiated dmabuf without gbm");
+                                    stop_cast();
+                                    return;
+                                };
 
                                 let pod_modifier = prop_modifier.value();
                                 let Ok((_, modifiers)) =
@@ -607,7 +619,7 @@ impl PipeWire {
                                 };
 
                                 let (modifier, plane_count) = match find_preferred_modifier(
-                                    &gbm,
+                                    gbm,
                                     format_size,
                                     fourcc,
                                     alternatives,
@@ -710,12 +722,16 @@ impl PipeWire {
                                     dma_negotiation.plane_count
                                 }
                                 _ => {
-                                    // gbm is always present when DMA negotiation proceeds.
+                                    let Some(gbm) = &gbm else {
+                                        error!("negotiated dmabuf without gbm");
+                                        stop_cast();
+                                        return;
+                                    };
 
                                     // We're negotiating a single modifier, or alpha or modifier
                                     // changed, so we need to do a test allocation.
                                     let (modifier, plane_count) = match find_preferred_modifier(
-                                        &gbm,
+                                        gbm,
                                         format_size,
                                         fourcc,
                                         vec![format.modifier() as i64],
@@ -868,7 +884,7 @@ impl PipeWire {
                     move |stream, (), buffer| {
                         let _span = debug_span!("add_buffer", %stream_id).entered();
 
-                        match unsafe { inner.borrow_mut().on_add_buffer(&gbm, buffer) } {
+                        match unsafe { inner.borrow_mut().on_add_buffer(gbm.as_ref(), buffer) } {
                             Ok(redraw) => {
                                 // During size re-negotiation, the stream sometimes just keeps
                                 // running, in which case we may need to force a redraw once we got
@@ -921,6 +937,7 @@ impl PipeWire {
             offer_alpha: alpha,
             cursor_mode,
             last_frame_time: Duration::ZERO,
+            last_frame_interval: Duration::ZERO,
             scheduled_redraw: None,
             sequence_counter: 0,
             inner,
@@ -992,6 +1009,25 @@ impl Cast {
             .context("error updating stream params")?;
 
         Ok(())
+    }
+
+    pub fn record_frame_time(&mut self, recorded: Duration) {
+        let interval = self.inner.borrow().min_time_between_frames;
+        let ideal = self.last_frame_time + interval;
+
+        // Absorb small (< 1 frame) differences in output refresh interval vs. screencast framerate
+        // to keep the screencast time base consistent instead of shifting forward every frame.
+        //
+        // After a missed interval or a rate change, restart instead of catching up in a burst.
+        self.last_frame_time = if self.last_frame_interval == interval
+            && recorded >= self.last_frame_time
+            && recorded < ideal + interval
+        {
+            ideal
+        } else {
+            recorded
+        };
+        self.last_frame_interval = interval;
     }
 
     fn compute_extra_delay(&self, target_frame_time: Duration) -> Duration {
@@ -1269,7 +1305,7 @@ impl Cast {
                         .map(|x| (x, SharingBuf::Dma))
                 }
                 x if x == DataType::MemFd.as_raw() => {
-                    let shmbuf = inner_.shmbufs[&fd].clone();
+                    let shmbuf = &inner_.shmbufs[&fd];
 
                     let fourcc = if alpha {
                         Fourcc::Argb8888
@@ -1277,8 +1313,8 @@ impl Cast {
                         Fourcc::Xrgb8888
                     };
 
-                    render_to_shmbuf(renderer, damage_tracker, &shmbuf, fourcc, elements, states)
-                        .map(|()| (SyncPoint::signaled(), SharingBuf::Shm(shmbuf)))
+                    render_to_shmbuf(renderer, damage_tracker, shmbuf, fourcc, elements, states)
+                        .map(|()| (SyncPoint::signaled(), SharingBuf::Shm(shmbuf.layout)))
                 }
                 _ => Err(anyhow::anyhow!(
                     "unknown data type in dequeue_buffer_and_render"
@@ -1338,8 +1374,10 @@ impl Cast {
                     clear_dmabuf(renderer, dmabuf).map(|x| (x, SharingBuf::Dma))
                 }
                 x if x == DataType::MemFd.as_raw() => {
-                    let shmbuf = self.inner.borrow().shmbufs[&fd].clone();
-                    clear_shmbuf(&shmbuf).map(|()| (SyncPoint::signaled(), SharingBuf::Shm(shmbuf)))
+                    let inner = self.inner.borrow();
+                    let shmbuf = &inner.shmbufs[&fd];
+                    clear_shmbuf(shmbuf);
+                    Ok((SyncPoint::signaled(), SharingBuf::Shm(shmbuf.layout)))
                 }
                 _ => Err(anyhow::anyhow!(
                     "unknown data type in dequeue_buffer_and_clear"
@@ -1366,7 +1404,7 @@ impl Cast {
 impl CastInner {
     unsafe fn on_add_buffer(
         &mut self,
-        gbm: &GbmDevice<DrmDeviceFd>,
+        gbm: Option<&GbmDevice<DeviceFd>>,
         buffer: *mut pw_buffer,
     ) -> anyhow::Result<bool> {
         let CastState::Ready {
@@ -1387,8 +1425,10 @@ impl CastInner {
                      alpha={alpha}, modifier={modifier:?}"
                 );
 
-                // gbm is always present when DMA negotiation proceeds.
-                let gbm = &gbm;
+                let Some(gbm) = gbm else {
+                    error!("add_buffer(dma) without gbm");
+                    bail!("missing gbm");
+                };
 
                 unsafe {
                     let spa_buffer = (*buffer).buffer;
@@ -1527,7 +1567,7 @@ fn make_pod(buffer: &mut Vec<u8>, object: pod::Object) -> &Pod {
 }
 
 fn find_preferred_modifier(
-    gbm: &GbmDevice<DrmDeviceFd>,
+    gbm: &GbmDevice<DeviceFd>,
     size: Size<u32, Physical>,
     fourcc: Fourcc,
     modifiers: Vec<i64>,
@@ -1547,7 +1587,7 @@ fn find_preferred_modifier(
 }
 
 fn allocate_buffer(
-    gbm: &GbmDevice<DrmDeviceFd>,
+    gbm: &GbmDevice<DeviceFd>,
     size: Size<u32, Physical>,
     fourcc: Fourcc,
     modifiers: &[i64],
@@ -1579,7 +1619,7 @@ fn allocate_buffer(
 }
 
 fn allocate_dmabuf(
-    gbm: &GbmDevice<DrmDeviceFd>,
+    gbm: &GbmDevice<DeviceFd>,
     size: Size<u32, Physical>,
     fourcc: Fourcc,
     modifier: Modifier,
@@ -1591,10 +1631,11 @@ fn allocate_dmabuf(
     Ok(dmabuf)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Shmbuf {
-    fd: Rc<OwnedFd>,
+    fd: OwnedFd,
     layout: ShmLayout,
+    mapping: ShmMapping,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1626,7 +1667,7 @@ impl ShmLayout {
 
 enum SharingBuf {
     Dma,
-    Shm(Shmbuf),
+    Shm(ShmLayout),
 }
 
 fn allocate_shmbuf(size: Size<u32, Physical>) -> anyhow::Result<Shmbuf> {
@@ -1639,9 +1680,13 @@ fn allocate_shmbuf(size: Size<u32, Physical>) -> anyhow::Result<Shmbuf> {
     ftruncate(&fd, layout.size.into()).context("error setting size of the fd")?;
     fcntl_add_seals(&fd, SealFlags::SEAL | SealFlags::SHRINK | SealFlags::GROW)
         .context("error sealing the fd")?;
+    // SAFETY: The file has the requested size and is sealed against shrinking.
+    // We only access the mapping while we own the dequeued PipeWire buffer.
+    let mapping = unsafe { ShmMapping::new(fd.as_fd(), layout.size_usize()) }?;
     Ok(Shmbuf {
-        fd: fd.into(),
+        fd,
         layout,
+        mapping,
     })
 }
 
@@ -1681,8 +1726,8 @@ unsafe fn mark_buffer_as_good(pw_buffer: NonNull<pw_buffer>, sequence: &mut u64,
             // Clear the corrupted flag we may have set before.
             (*chunk).flags = SPA_CHUNK_FLAG_NONE as i32;
         }
-        SharingBuf::Shm(shmbuf) => {
-            (*chunk).size = shmbuf.layout.size;
+        SharingBuf::Shm(layout) => {
+            (*chunk).size = layout.size;
             (*chunk).flags = SPA_CHUNK_FLAG_NONE as i32;
         }
     }
@@ -1874,45 +1919,12 @@ fn render_to_shmbuf(
         .map_texture(&mapping)
         .context("error mapping texture")?;
 
-    unsafe {
-        let buf = mmap(
-            std::ptr::null_mut(),
-            buffer.layout.size_usize(),
-            ProtFlags::READ | ProtFlags::WRITE,
-            MapFlags::SHARED,
-            buffer.fd.clone(),
-            0,
-        )?;
-        {
-            let buf = slice::from_raw_parts_mut(buf.cast::<u8>(), buffer.layout.size_usize());
-            buf.copy_from_slice(bytes);
-        }
-        if let Err(err) = munmap(buf, buffer.layout.size_usize()) {
-            warn!("error unmapping shm buffer: {err:?}");
-        }
-    }
+    buffer.mapping.copy_frame(bytes);
     Ok(())
 }
 
-fn clear_shmbuf(buffer: &Shmbuf) -> anyhow::Result<()> {
-    unsafe {
-        let buf = mmap(
-            std::ptr::null_mut(),
-            buffer.layout.size_usize(),
-            ProtFlags::READ | ProtFlags::WRITE,
-            MapFlags::SHARED,
-            buffer.fd.clone(),
-            0,
-        )?;
-        {
-            let buf = slice::from_raw_parts_mut(buf.cast::<u8>(), buffer.layout.size_usize());
-            buf.fill(0);
-        }
-        if let Err(err) = munmap(buf, buffer.layout.size_usize()) {
-            warn!("error unmapping shm buffer: {err:?}");
-        }
-    }
-    Ok(())
+fn clear_shmbuf(buffer: &Shmbuf) {
+    buffer.mapping.clear();
 }
 
 #[cfg(test)]
