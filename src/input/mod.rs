@@ -50,7 +50,7 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::scrolling::ScrollDirection;
 use crate::layout::{ActivateWindow, LayoutElement as _};
-use crate::niri::{CastTarget, KeyboardFocus, PointerVisibility, State};
+use crate::niri::{CastTarget, KeyboardFocus, Niri, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
 use crate::ui::screenshot_ui::ScreenshotUi;
 use crate::utils::spawning::{spawn, spawn_sh};
@@ -537,11 +537,16 @@ impl State {
 
                 if let Some(raw) = raw {
                     if pressed && modifier_from_keysym(raw).is_some() {
+                        let magnifier = MagnifierBindsFilter::new(&this.niri);
                         let config = this.niri.config.borrow();
-                        let bindings =
-                            make_binds_iter(&config, &mut this.niri.window_mru_ui, modifiers)
-                                .cloned()
-                                .collect::<Vec<_>>();
+                        let bindings = make_binds_iter(
+                            &config,
+                            &mut this.niri.window_mru_ui,
+                            magnifier,
+                            modifiers,
+                        )
+                        .cloned()
+                        .collect::<Vec<_>>();
                         maybe_start_pending_modifier_bind(
                             &mut this.niri.pending_modifier_bind,
                             bindings.iter(),
@@ -670,9 +675,14 @@ impl State {
                 }
 
                 let res = {
+                    let magnifier = MagnifierBindsFilter::new(&this.niri);
                     let config = this.niri.config.borrow();
-                    let bindings =
-                        make_binds_iter(&config, &mut this.niri.window_mru_ui, modifiers);
+                    let bindings = make_binds_iter(
+                        &config,
+                        &mut this.niri.window_mru_ui,
+                        magnifier,
+                        modifiers,
+                    );
 
                     should_intercept_key(
                         &mut this.niri.suppressed_keys,
@@ -2548,6 +2558,18 @@ impl State {
             Action::AdjustMagnifierZoom(delta) => {
                 self.niri.adjust_magnifier_zoom(delta);
             }
+            Action::MoveMagnifierLeft => {
+                self.niri.move_magnifier_center(-1., 0.);
+            }
+            Action::MoveMagnifierRight => {
+                self.niri.move_magnifier_center(1., 0.);
+            }
+            Action::MoveMagnifierUp => {
+                self.niri.move_magnifier_center(0., -1.);
+            }
+            Action::MoveMagnifierDown => {
+                self.niri.move_magnifier_center(0., 1.);
+            }
             Action::ToggleOverview => {
                 self.niri.layout.toggle_overview();
                 self.niri.queue_redraw_all();
@@ -3202,9 +3224,14 @@ impl State {
                     _ => None,
                 }
                 .and_then(|trigger| {
+                    let magnifier = MagnifierBindsFilter::new(&self.niri);
                     let config = self.niri.config.borrow();
-                    let bindings =
-                        make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
+                    let bindings = make_binds_iter(
+                        &config,
+                        &mut self.niri.window_mru_ui,
+                        magnifier,
+                        modifiers,
+                    );
                     find_configured_bind(bindings, mod_key, trigger, mods)
                 })
                 .filter(|bind| {
@@ -3714,9 +3741,14 @@ impl State {
                             });
                             (bind_left, bind_right)
                         } else {
+                            let magnifier = MagnifierBindsFilter::new(&self.niri);
                             let config = self.niri.config.borrow();
-                            let bindings =
-                                make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
+                            let bindings = make_binds_iter(
+                                &config,
+                                &mut self.niri.window_mru_ui,
+                                magnifier,
+                                modifiers,
+                            );
                             let bind_left = find_configured_bind(
                                 bindings.clone(),
                                 mod_key,
@@ -3846,9 +3878,14 @@ impl State {
                         });
                         (bind_up, bind_down)
                     } else {
+                        let magnifier = MagnifierBindsFilter::new(&self.niri);
                         let config = self.niri.config.borrow();
-                        let bindings =
-                            make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
+                        let bindings = make_binds_iter(
+                            &config,
+                            &mut self.niri.window_mru_ui,
+                            magnifier,
+                            modifiers,
+                        );
                         let bind_up = find_configured_bind(
                             bindings.clone(),
                             mod_key,
@@ -4010,9 +4047,14 @@ impl State {
                     .horizontal_finger_scroll_tracker
                     .accumulate(horizontal);
                 if ticks != 0 {
+                    let magnifier = MagnifierBindsFilter::new(&self.niri);
                     let config = self.niri.config.borrow();
-                    let bindings =
-                        make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
+                    let bindings = make_binds_iter(
+                        &config,
+                        &mut self.niri.window_mru_ui,
+                        magnifier,
+                        modifiers,
+                    );
                     let bind_left = find_configured_bind(
                         bindings.clone(),
                         mod_key,
@@ -4069,9 +4111,14 @@ impl State {
                     .vertical_finger_scroll_tracker
                     .accumulate(vertical);
                 if ticks != 0 {
+                    let magnifier = MagnifierBindsFilter::new(&self.niri);
                     let config = self.niri.config.borrow();
-                    let bindings =
-                        make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
+                    let bindings = make_binds_iter(
+                        &config,
+                        &mut self.niri.window_mru_ui,
+                        magnifier,
+                        modifiers,
+                    );
                     let bind_up = find_configured_bind(
                         bindings.clone(),
                         mod_key,
@@ -5590,9 +5637,13 @@ fn allowed_during_screenshot(action: &Action) -> bool {
             // Intended for binds such as volume up/down, lock the screen, etc.
             | Action::Spawn(_)
             | Action::SpawnSh(_)
-            // Magnifier can be toggled and adjusted during screenshot.
+            // Magnifier can be toggled, adjusted and moved during screenshot.
             | Action::ToggleMagnifier
             | Action::AdjustMagnifierZoom(_)
+            | Action::MoveMagnifierLeft
+            | Action::MoveMagnifierRight
+            | Action::MoveMagnifierUp
+            | Action::MoveMagnifierDown
             // The screenshot UI can handle these.
             | Action::MoveColumnLeft
             | Action::MoveColumnLeftOrToMonitorLeft
@@ -6149,14 +6200,61 @@ fn grab_allows_hot_corner(grab: &(dyn PointerGrab<State> + 'static)) -> bool {
 /// Returns an iterator over bindings.
 ///
 /// Includes dynamically populated bindings like the MRU UI.
+/// Which of the `magnifier { binds {} }` binds currently apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MagnifierBindsFilter {
+    /// The magnifier is off: none of them.
+    None,
+    /// The magnifier is on, but its view follows the cursor: all but the move binds.
+    NoMove,
+    /// All of them.
+    All,
+}
+
+impl MagnifierBindsFilter {
+    fn new(niri: &Niri) -> Self {
+        // The screenshot UI and the lock screen handle keys on their own.
+        if !niri.magnifier_active || niri.screenshot_ui.is_open() || niri.is_locked() {
+            Self::None
+        } else if niri.can_drag_magnifier_center() {
+            Self::All
+        } else {
+            Self::NoMove
+        }
+    }
+
+    fn allows(self, bind: &Bind) -> bool {
+        match self {
+            Self::None => false,
+            Self::NoMove => !matches!(
+                bind.action,
+                Action::MoveMagnifierLeft
+                    | Action::MoveMagnifierRight
+                    | Action::MoveMagnifierUp
+                    | Action::MoveMagnifierDown
+            ),
+            Self::All => true,
+        }
+    }
+}
+
 fn make_binds_iter<'a>(
     config: &'a Config,
     mru: &'a mut WindowMruUi,
+    magnifier: MagnifierBindsFilter,
     mods: Modifiers,
 ) -> impl Iterator<Item = &'a Bind> + Clone {
     // Figure out the binds to use depending on whether the MRU is enabled and/or open.
     let general_binds = (!mru.is_open()).then_some(config.binds.0.iter());
     let general_binds = general_binds.into_iter().flatten();
+
+    // Binds that don't apply fall through to the general binds, so that the magnifier can reuse
+    // their keys.
+    let magnifier_binds = (!mru.is_open()).then_some(config.magnifier.binds.iter());
+    let magnifier_binds = magnifier_binds
+        .into_iter()
+        .flatten()
+        .filter(move |bind| magnifier.allows(bind));
 
     let mru_binds =
         (config.recent_windows.on || mru.is_open()).then_some(config.recent_windows.binds.iter());
@@ -6165,14 +6263,68 @@ fn make_binds_iter<'a>(
     let mru_open_binds = mru.is_open().then(|| mru.opened_bindings(mods));
     let mru_open_binds = mru_open_binds.into_iter().flatten();
 
-    // General binds take precedence over the MRU binds.
-    general_binds.chain(mru_binds).chain(mru_open_binds)
+    // Magnifier binds take precedence over the general binds, which take precedence over the MRU
+    // binds.
+    magnifier_binds
+        .chain(general_binds)
+        .chain(mru_binds)
+        .chain(mru_open_binds)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use super::*;
     use crate::animation::Clock;
+
+    #[test]
+    fn magnifier_binds_take_precedence_only_while_they_apply() {
+        let config = Config::parse_mem(
+            r#"
+            binds {
+                Mod+H { focus-column-left; }
+            }
+
+            magnifier {
+                binds {
+                    Mod+H { move-magnifier-left; }
+                    Escape { toggle-magnifier; }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let config = Rc::new(RefCell::new(config));
+        let mut mru = WindowMruUi::new(config.clone());
+        let config = config.borrow();
+
+        let mut find = |filter, keysym, mods| {
+            let bindings = make_binds_iter(&config, &mut mru, filter, Modifiers::empty());
+            find_configured_bind(bindings, ModKey::Super, Trigger::Keysym(keysym), mods)
+                .map(|bind| bind.action)
+        };
+        let logo = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        let none = ModifiersState::default();
+
+        use MagnifierBindsFilter::{All, NoMove, None as Off};
+        assert_eq!(find(Off, Keysym::h, logo), Some(Action::FocusColumnLeft));
+        assert_eq!(find(Off, Keysym::Escape, none), None);
+        assert_eq!(find(NoMove, Keysym::h, logo), Some(Action::FocusColumnLeft));
+        assert_eq!(
+            find(NoMove, Keysym::Escape, none),
+            Some(Action::ToggleMagnifier)
+        );
+        assert_eq!(find(All, Keysym::h, logo), Some(Action::MoveMagnifierLeft));
+        assert_eq!(
+            find(All, Keysym::Escape, none),
+            Some(Action::ToggleMagnifier)
+        );
+    }
 
     #[test]
     fn grid_return_confirm_handles_overview_focus() {

@@ -125,7 +125,7 @@ use wayland_server::protocol::wl_output::WlOutput;
 
 #[cfg(feature = "dbus")]
 use crate::a11y::A11y;
-use crate::animation::Clock;
+use crate::animation::{Animation, Clock};
 use crate::backend::tty::SurfaceDmabufFeedback;
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
 use crate::cursor::{CursorManager, CursorTextureCache, RenderCursor, XCursor};
@@ -304,6 +304,8 @@ pub struct Niri {
     pub magnifier_animation: Option<crate::animation::Animation>,
     pub magnifier_capture: Cell<bool>,
     pub magnifier_center: RefCell<Option<(WeakOutput, Point<i32, Physical>)>>,
+    /// Movement of the shown magnifier center towards `magnifier_center`.
+    pub magnifier_center_anim: Option<MagnifierCenterAnim>,
 
     /// Output capture sessions. Kept out of the protocol state because each one needs a damage
     /// tracker and is handled in the redraw loop.
@@ -695,6 +697,38 @@ pub struct PendingMruCommit {
     id: MappedId,
     token: RegistrationToken,
     stamp: Duration,
+}
+
+/// Animated movement of the locked magnifier center.
+#[derive(Debug)]
+pub struct MagnifierCenterAnim {
+    output: WeakOutput,
+    x: Animation,
+    y: Animation,
+}
+
+impl MagnifierCenterAnim {
+    /// Whether this animation moves the center of `output` towards `target`.
+    ///
+    /// Anything that sets the center some other way leaves a stale animation behind, which this
+    /// tells apart.
+    fn heads_to(&self, output: &Output, target: Point<i32, Physical>) -> bool {
+        self.output.upgrade().as_ref() == Some(output)
+            && self.x.to() == f64::from(target.x)
+            && self.y.to() == f64::from(target.y)
+    }
+
+    fn value(&self) -> Point<f64, Physical> {
+        Point::from((self.x.value(), self.y.value()))
+    }
+
+    fn current_velocity(&self) -> Point<f64, Physical> {
+        Point::from((self.x.current_velocity(), self.y.current_velocity()))
+    }
+
+    fn is_done(&self) -> bool {
+        self.x.is_done() && self.y.is_done()
+    }
 }
 
 impl RedrawState {
@@ -3330,6 +3364,7 @@ impl Niri {
             magnifier_animation: None,
             magnifier_capture: Cell::new(false),
             magnifier_center: RefCell::new(None),
+            magnifier_center_anim: None,
 
             compositor_state,
             xdg_shell_state,
@@ -4698,6 +4733,11 @@ impl Niri {
                 self.magnifier_animation = None;
             }
         }
+        if let Some(anim) = &self.magnifier_center_anim {
+            if anim.is_done() {
+                self.magnifier_center_anim = None;
+            }
+        }
     }
 
     pub fn adjust_magnifier_zoom(&mut self, delta: f64) {
@@ -4748,7 +4788,8 @@ impl Niri {
                 let output = weak.upgrade()?;
                 let output_geo = self.global_space.output_geometry(&output)?;
                 if output_geo.to_f64().contains(location) {
-                    let center = self.clamp_magnifier_center_to_output(&output, *center);
+                    // Grab the view where it is shown, even halfway through a move.
+                    let center = self.shown_magnifier_center(&output, *center);
                     return Some((output, center));
                 }
 
@@ -4774,8 +4815,82 @@ impl Niri {
 
         let center = self.clamp_magnifier_center_to_output(output, center);
         *self.magnifier_center.borrow_mut() = Some((output.downgrade(), center));
+        self.magnifier_center_anim = None;
         self.queue_redraw(&output);
         true
+    }
+
+    /// Moves the locked magnifier center by `dx` and `dy` steps.
+    pub fn move_magnifier_center(&mut self, dx: f64, dy: f64) {
+        if !self.can_drag_magnifier_center() {
+            return;
+        }
+
+        let locked = self
+            .magnifier_center
+            .borrow()
+            .as_ref()
+            .and_then(|(weak, center)| Some((weak.upgrade()?, *center)));
+        let (output, center) = match locked {
+            Some(locked) => locked,
+            None => {
+                // The center locks on the first magnified frame. If that frame hasn't happened
+                // yet, start from the pointer, like compute_magnifier_params() would.
+                let pointer_pos = self
+                    .tablet_cursor_location
+                    .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
+                let Some((output, pos_within_output)) = self.output_under(pointer_pos) else {
+                    return;
+                };
+                let output_scale = Scale::from(output.current_scale().fractional_scale());
+                let center = pos_within_output.to_physical_precise_round(output_scale);
+                (output.clone(), center)
+            }
+        };
+
+        let size = output.current_mode().unwrap().size;
+        let size = output.current_transform().transform_size(size);
+        let zoom = self.magnifier_zoom;
+        let step = self.config.borrow().magnifier.move_step;
+        let delta = Point::<f64, Physical>::from((
+            dx * magnifier_move_step(size.w, zoom, step),
+            dy * magnifier_move_step(size.h, zoom, step),
+        ));
+        let target = (center.to_f64() + delta).to_i32_round();
+        let target = self.clamp_magnifier_center_to_output(&output, target);
+
+        // Continue from where the view is shown, at its current speed, so that the steps of a
+        // held key chain into one smooth movement.
+        let (from, velocity) = match &self.magnifier_center_anim {
+            Some(anim) if anim.heads_to(&output, center) => (anim.value(), anim.current_velocity()),
+            _ => (center.to_f64(), Point::default()),
+        };
+        let config = self.config.borrow().animations.magnifier.0;
+        let anim = |from, to: i32, velocity| {
+            Animation::new(self.clock.clone(), from, f64::from(to), velocity, config)
+        };
+        self.magnifier_center_anim = Some(MagnifierCenterAnim {
+            output: output.downgrade(),
+            x: anim(from.x, target.x, velocity.x),
+            y: anim(from.y, target.y, velocity.y),
+        });
+
+        *self.magnifier_center.borrow_mut() = Some((output.downgrade(), target));
+        self.queue_redraw(&output);
+    }
+
+    /// Returns where the magnifier shows the locked `center` of `output`, which differs from it
+    /// while the center is moving.
+    fn shown_magnifier_center(
+        &self,
+        output: &Output,
+        center: Point<i32, Physical>,
+    ) -> Point<i32, Physical> {
+        let shown = match &self.magnifier_center_anim {
+            Some(anim) if anim.heads_to(output, center) => anim.value().to_i32_round(),
+            _ => center,
+        };
+        self.clamp_magnifier_center_to_output(output, shown)
     }
 
     fn clamp_magnifier_center_to_output(
@@ -5650,7 +5765,7 @@ impl Niri {
                 })
             };
             if let Some(c) = center {
-                return Some((zoom, c));
+                return Some((zoom, self.shown_magnifier_center(output, c)));
             }
             if !output_geo.to_f64().contains(pointer_pos) {
                 return None;
@@ -6220,6 +6335,10 @@ impl Niri {
                 .as_ref()
                 .map(|a| !a.is_done())
                 .unwrap_or(false);
+            let magnifier_center_anim_ongoing = self
+                .magnifier_center_anim
+                .as_ref()
+                .is_some_and(|a| a.output.upgrade().as_ref() == Some(output) && !a.is_done());
 
             let state = self.output_state.get_mut(output).unwrap();
             state.unfinished_animations_remain = self.layout.are_animations_ongoing(Some(output));
@@ -6242,6 +6361,7 @@ impl Niri {
 
             state.unfinished_animations_remain |= pointer_anim_ongoing;
             state.unfinished_animations_remain |= magnifier_anim_ongoing;
+            state.unfinished_animations_remain |= magnifier_center_anim_ongoing;
 
             // Cursor effects: keep redrawing while any particle is alive, even
             // if the mouse is idle — waves/sparks/trail still need to advance.
@@ -9019,6 +9139,17 @@ impl<'render>
     }
 }
 
+/// Returns how far one move-magnifier step moves the center across an output `size` pixels long,
+/// for a step that is `step` of the visible area.
+///
+/// The magnifier center is the zoom pivot rather than the middle of the view: moving it by `d`
+/// moves the view by `d * (1 - 1 / zoom)`. Dividing by that keeps a step at the same fraction of
+/// the visible area at any zoom level.
+fn magnifier_move_step(size: i32, zoom: f64, step: f64) -> f64 {
+    let visible = f64::from(size) / zoom;
+    visible * step / (1. - 1. / zoom)
+}
+
 #[cfg(feature = "xdp-gnome-screencast")]
 fn should_render_screen_cast_picker(rendering_output: bool, intent: RenderIntent) -> bool {
     // Render the picker into screencasts and screen captures (screencopy, i.e. wf-recorder and
@@ -9059,5 +9190,25 @@ mod screen_cast_picker_preview_tests {
             false,
             RenderIntent::PickerPreview
         ));
+    }
+}
+
+#[cfg(test)]
+mod magnifier_tests {
+    use super::*;
+
+    #[test]
+    fn move_step_is_the_same_share_of_the_view_at_any_zoom() {
+        let size = 2560;
+        let step = 0.05;
+        for zoom in [1.2, 2., 3., 10.] {
+            // Zooming around pivot p shows the area starting at p * (1 - 1 / zoom).
+            let view_x = |pivot: f64| pivot * (1. - 1. / zoom);
+
+            let pivot = 1000.;
+            let moved = view_x(pivot + magnifier_move_step(size, zoom, step)) - view_x(pivot);
+            let visible = f64::from(size) / zoom;
+            assert!((moved - visible * step).abs() < 1e-9, "zoom {zoom}");
+        }
     }
 }

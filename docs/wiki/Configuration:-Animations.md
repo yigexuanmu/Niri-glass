@@ -474,6 +474,8 @@ animations {
 
 The toggle zoom animation of the [screen magnifier](./Configuration:-Miscellaneous.md#magnifier).
 
+<sup>Since: next release</sup> Also used when the [`move-magnifier-*`](./Configuration:-Key-Bindings.md#move-magnifier-left-move-magnifier-right-move-magnifier-up-move-magnifier-down) actions move the magnified view.
+
 ```kdl
 animations {
     magnifier {

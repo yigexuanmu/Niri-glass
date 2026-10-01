@@ -582,7 +582,7 @@ magnifier {
 #### `track-cursor`
 
 When enabled (default), the magnifier follows the cursor position. Set to `false` to lock the magnification center to the cursor position at first activation, keeping the screen fixed regardless of cursor movement.
-When the magnifier is active with `track-cursor false`, hold the middle mouse button and drag to move the locked center.
+When the magnifier is active with `track-cursor false`, hold the middle mouse button and drag to move the locked center, or use the [`move-magnifier-*`](./Configuration:-Key-Bindings.md#move-magnifier-left-move-magnifier-right-move-magnifier-up-move-magnifier-down) actions.
 
 ```kdl
 magnifier {
@@ -602,7 +602,61 @@ magnifier {
 }
 ```
 
-The toggle animation can be customized in the [`animations`](./Configuration:-Animations.md) section under `magnifier`:
+#### `move-step`
+
+<sup>Since: next release</sup>
+
+How far one [`move-magnifier-*`](./Configuration:-Key-Bindings.md#move-magnifier-left-move-magnifier-right-move-magnifier-up-move-magnifier-down) step moves the view, as a fraction of the visible area, from `0.0` to `1.0`.
+The step looks the same at any zoom level.
+Defaults to `0.05`.
+
+Holding a key repeats the step at your keyboard [repeat rate](./Configuration:-Input.md#repeat), so this also sets how fast the view moves while you hold the key.
+
+```kdl
+magnifier {
+    track-cursor false
+    move-step 0.1
+}
+```
+
+#### `binds`
+
+<sup>Since: next release</sup>
+
+Binds that only work while the magnifier is on.
+While it is on, they take precedence over the [regular binds](./Configuration:-Key-Bindings.md), so they can reuse keys that normally do something else.
+While it is off, they do nothing and the keys work as usual.
+
+Only these actions are allowed here:
+
+- `move-magnifier-left`, `move-magnifier-right`, `move-magnifier-up`, `move-magnifier-down`: move the magnified view by [`move-step`](#move-step) of the visible area.
+They only apply with `track-cursor false`; with the magnifier following the cursor, these keys work as usual.
+Holding the key repeats the step.
+- `toggle-magnifier`: turn the magnifier off.
+Unlike other binds, it doesn't repeat by default, so holding the key doesn't turn the magnifier back on.
+
+Binds here support the `repeat` and `allow-inhibiting` properties of the regular binds.
+They must use keyboard keys; mouse buttons, the scroll wheel and touchpad gestures are not supported.
+They don't work while the screenshot UI or the lock screen is open.
+
+```kdl
+magnifier {
+    track-cursor false
+
+    binds {
+        // While magnifying, these move the view instead of the focus.
+        Mod+H { move-magnifier-left; }
+        Mod+J { move-magnifier-down; }
+        Mod+K { move-magnifier-up; }
+        Mod+L { move-magnifier-right; }
+
+        // Keys without modifiers work too, but applications don't get them while magnifying.
+        Escape { toggle-magnifier; }
+    }
+}
+```
+
+The toggle and move animations can be customized in the [`animations`](./Configuration:-Animations.md) section under `magnifier`:
 
 ```kdl
 animations {

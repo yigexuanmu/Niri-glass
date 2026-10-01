@@ -979,6 +979,22 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
         delta: f64,
     },
+    /// Move the magnified view left.
+    ///
+    /// Only works while the magnifier is on with `track-cursor false`.
+    MoveMagnifierLeft {},
+    /// Move the magnified view right.
+    ///
+    /// Only works while the magnifier is on with `track-cursor false`.
+    MoveMagnifierRight {},
+    /// Move the magnified view up.
+    ///
+    /// Only works while the magnifier is on with `track-cursor false`.
+    MoveMagnifierUp {},
+    /// Move the magnified view down.
+    ///
+    /// Only works while the magnifier is on with `track-cursor false`.
+    MoveMagnifierDown {},
     /// Open the Overview.
     OpenOverview {},
     /// Close the Overview.

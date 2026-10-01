@@ -391,10 +391,32 @@ magnifier {
     zoom-factor 2
 
     // Whether the magnified view follows the cursor.
-    track-cursor true
+    // When false, the view stays where it was turned on. Move it with the binds below,
+    // or drag with the middle mouse button.
+    track-cursor false
 
     // Whether the cursor itself is scaled along with the magnified content.
     scale-cursor true
+
+    // How far one move-magnifier step moves the view, as a fraction of the visible area.
+    move-step 0.05
+
+    // Binds that only work while the magnifier is on. They take precedence over
+    // the regular binds, so here the focus keys move the magnified view instead.
+    // Only move-magnifier-* and toggle-magnifier are allowed here.
+    binds {
+        Mod+Left  { move-magnifier-left; }
+        Mod+Down  { move-magnifier-down; }
+        Mod+Up    { move-magnifier-up; }
+        Mod+Right { move-magnifier-right; }
+        Mod+H     { move-magnifier-left; }
+        Mod+J     { move-magnifier-down; }
+        Mod+K     { move-magnifier-up; }
+        Mod+L     { move-magnifier-right; }
+
+        // Applications don't get Escape while the magnifier is on.
+        Escape { toggle-magnifier; }
+    }
 }
 
 // Animation settings.

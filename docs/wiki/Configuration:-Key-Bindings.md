@@ -473,6 +473,8 @@ binds {
 }
 ```
 
+#### `adjust-magnifier-zoom`
+
 <sup>Since: 26.04</sup>
 
 Adjust the screen magnifier zoom by the given delta. Positive values zoom in, negative values zoom out. The zoom ranges from `1.0` (no zoom) to `10.0`. Zooming down to `1.0` turns the magnifier off. This action responds instantly without animation, making it suitable for scroll wheel binds.
@@ -481,5 +483,25 @@ Adjust the screen magnifier zoom by the given delta. Positive values zoom in, ne
 binds {
     Mod+WheelScrollUp   { adjust-magnifier-zoom 0.1; }
     Mod+WheelScrollDown { adjust-magnifier-zoom -0.1; }
+}
+```
+
+#### `move-magnifier-left`, `move-magnifier-right`, `move-magnifier-up`, `move-magnifier-down`
+
+<sup>Since: next release</sup>
+
+Move the magnified view in the given direction.
+Each step moves the view by [`magnifier.move-step`](./Configuration:-Miscellaneous.md#move-step) of the visible area (1/20 by default), whatever the zoom level, and holding the key repeats it.
+The movement uses the [`magnifier` animation](./Configuration:-Animations.md#magnifier), and the steps of a held key chain into one smooth movement.
+These actions only work while the magnifier is on with [`magnifier.track-cursor false`](./Configuration:-Miscellaneous.md#track-cursor); otherwise they do nothing.
+
+To reuse keys that normally do something else, put these actions into the [magnifier `binds {}` section](./Configuration:-Miscellaneous.md#binds) instead: those binds only take over while the magnifier is on.
+
+```kdl
+binds {
+    Mod+Ctrl+Alt+H { move-magnifier-left; }
+    Mod+Ctrl+Alt+J { move-magnifier-down; }
+    Mod+Ctrl+Alt+K { move-magnifier-up; }
+    Mod+Ctrl+Alt+L { move-magnifier-right; }
 }
 ```

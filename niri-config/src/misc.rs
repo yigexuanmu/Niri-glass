@@ -1,6 +1,10 @@
+use std::collections::HashSet;
+
+use knuffel::errors::DecodeError;
+
 use crate::appearance::{Color, WorkspaceShadow, WorkspaceShadowPart, DEFAULT_BACKDROP_COLOR};
-use crate::utils::{parse_arg_node, Flag, MergeWith};
-use crate::FloatOrInt;
+use crate::utils::{expect_only_children, parse_arg_node, Flag, MergeWith};
+use crate::{Action, Bind, FloatOrInt, Key, Trigger};
 use std::str::FromStr;
 
 #[derive(knuffel::Decode, Debug, Clone, PartialEq, Eq)]
@@ -520,12 +524,16 @@ impl MergeWith<ClipboardPart> for Clipboard {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Magnifier {
     pub off: bool,
     pub zoom_factor: f64,
     pub track_cursor: bool,
     pub scale_cursor: bool,
+    /// Fraction of the visible area that one move-magnifier step moves the view by.
+    pub move_step: f64,
+    /// Binds that take precedence over the regular binds while the magnifier is on.
+    pub binds: Vec<Bind>,
 }
 
 impl Default for Magnifier {
@@ -535,6 +543,8 @@ impl Default for Magnifier {
             zoom_factor: 2.0,
             track_cursor: true,
             scale_cursor: true,
+            move_step: 0.05,
+            binds: Vec::new(),
         }
     }
 }
@@ -551,6 +561,10 @@ pub struct MagnifierPart {
     pub track_cursor: Option<Flag>,
     #[knuffel(child)]
     pub scale_cursor: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub move_step: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub binds: Option<MagnifierBinds>,
 }
 
 impl MergeWith<MagnifierPart> for Magnifier {
@@ -559,7 +573,211 @@ impl MergeWith<MagnifierPart> for Magnifier {
         if part.on {
             self.off = false;
         }
-        merge!((self, part), zoom_factor, track_cursor, scale_cursor);
+        merge!(
+            (self, part),
+            zoom_factor,
+            track_cursor,
+            scale_cursor,
+            move_step
+        );
+
+        if let Some(part) = &part.binds {
+            // Remove existing binds matching any new bind.
+            self.binds
+                .retain(|bind| !part.0.iter().any(|new| new.key == bind.key));
+            // Add all new binds.
+            self.binds.extend(part.0.iter().cloned().map(Bind::from));
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MagnifierBind {
+    pub key: Key,
+    pub action: MagnifierAction,
+    /// Explicit `repeat`; the default depends on the action.
+    pub repeat: Option<bool>,
+    pub allow_inhibiting: bool,
+}
+
+impl From<MagnifierBind> for Bind {
+    fn from(x: MagnifierBind) -> Self {
+        Self {
+            key: x.key,
+            action: Action::from(x.action),
+            // Key repeat replays the bind, so a repeating toggle would turn the magnifier back on.
+            repeat: x
+                .repeat
+                .unwrap_or(x.action != MagnifierAction::ToggleMagnifier),
+            cooldown: None,
+            allow_when_locked: false,
+            allow_inhibiting: x.allow_inhibiting,
+            hotkey_overlay_title: None,
+        }
+    }
+}
+
+/// Actions allowed in the magnifier binds.
+#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MagnifierAction {
+    MoveMagnifierLeft,
+    MoveMagnifierRight,
+    MoveMagnifierUp,
+    MoveMagnifierDown,
+    ToggleMagnifier,
+}
+
+impl From<MagnifierAction> for Action {
+    fn from(x: MagnifierAction) -> Self {
+        match x {
+            MagnifierAction::MoveMagnifierLeft => Self::MoveMagnifierLeft,
+            MagnifierAction::MoveMagnifierRight => Self::MoveMagnifierRight,
+            MagnifierAction::MoveMagnifierUp => Self::MoveMagnifierUp,
+            MagnifierAction::MoveMagnifierDown => Self::MoveMagnifierDown,
+            MagnifierAction::ToggleMagnifier => Self::ToggleMagnifier,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct MagnifierBinds(pub Vec<MagnifierBind>);
+
+impl<S> knuffel::Decode<S> for MagnifierBinds
+where
+    S: knuffel::traits::ErrorSpan,
+{
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        expect_only_children(node, ctx);
+
+        let mut seen_keys = HashSet::new();
+
+        let mut binds = Vec::new();
+
+        for child in node.children() {
+            match MagnifierBind::decode_node(child, ctx) {
+                Ok(bind) => {
+                    if !seen_keys.insert(bind.key) {
+                        ctx.emit_error(DecodeError::unexpected(
+                            &child.node_name,
+                            "keybind",
+                            "duplicate keybind",
+                        ));
+                        continue;
+                    }
+
+                    binds.push(bind);
+                }
+                Err(e) => {
+                    ctx.emit_error(e);
+                }
+            }
+        }
+
+        Ok(Self(binds))
+    }
+}
+
+impl<S> knuffel::Decode<S> for MagnifierBind
+where
+    S: knuffel::traits::ErrorSpan,
+{
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        if let Some(type_name) = &node.type_name {
+            ctx.emit_error(DecodeError::unexpected(
+                type_name,
+                "type name",
+                "no type name expected for this node",
+            ));
+        }
+
+        for val in node.arguments.iter() {
+            ctx.emit_error(DecodeError::unexpected(
+                &val.literal,
+                "argument",
+                "no arguments expected for this node",
+            ));
+        }
+
+        let key = node
+            .node_name
+            .parse::<Key>()
+            .map_err(|e| DecodeError::conversion(&node.node_name, e.wrap_err("invalid keybind")))?;
+
+        // FIXME: To support this, all the mods_with_mouse_binds()/mods_with_wheel_binds()/etc.
+        // will need to learn about magnifier bindings.
+        if !matches!(key.trigger, Trigger::Keysym(_)) {
+            ctx.emit_error(DecodeError::unexpected(
+                &node.node_name,
+                "key",
+                "key must be a keyboard key (others are unsupported here for now)",
+            ));
+        }
+
+        let mut repeat = None;
+        let mut allow_inhibiting = true;
+        for (name, val) in &node.properties {
+            match &***name {
+                "repeat" => {
+                    repeat = Some(knuffel::traits::DecodeScalar::decode(val, ctx)?);
+                }
+                "allow-inhibiting" => {
+                    allow_inhibiting = knuffel::traits::DecodeScalar::decode(val, ctx)?;
+                }
+                name_str => {
+                    ctx.emit_error(DecodeError::unexpected(
+                        name,
+                        "property",
+                        format!("unexpected property `{}`", name_str.escape_default()),
+                    ));
+                }
+            }
+        }
+
+        let mut children = node.children();
+
+        // If the action is invalid but the key is fine, we still want to return something.
+        // That way, the parent can handle the existence of duplicate keybinds,
+        // even if their contents are not valid.
+        let dummy = Self {
+            key,
+            action: MagnifierAction::ToggleMagnifier,
+            repeat: None,
+            allow_inhibiting: true,
+        };
+
+        if let Some(child) = children.next() {
+            for unwanted_child in children {
+                ctx.emit_error(DecodeError::unexpected(
+                    unwanted_child,
+                    "node",
+                    "only one action is allowed per keybind",
+                ));
+            }
+            match MagnifierAction::decode_node(child, ctx) {
+                Ok(action) => Ok(Self {
+                    key,
+                    action,
+                    repeat,
+                    allow_inhibiting,
+                }),
+                Err(e) => {
+                    ctx.emit_error(e);
+                    Ok(dummy)
+                }
+            }
+        } else {
+            ctx.emit_error(DecodeError::missing(
+                node,
+                "expected an action for this keybind",
+            ));
+            Ok(dummy)
+        }
     }
 }
 

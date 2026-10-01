@@ -747,6 +747,67 @@ mod tests {
     }
 
     #[test]
+    fn magnifier_move_step_parses() {
+        let config = Config::parse_mem("magnifier { move-step 0.1; }").unwrap();
+        assert_eq!(config.magnifier.move_step, 0.1);
+
+        assert!(Config::parse_mem("magnifier { move-step 1.5; }").is_err());
+        assert!(Config::parse_mem("magnifier { move-step -0.1; }").is_err());
+    }
+
+    #[test]
+    fn magnifier_binds_parse() {
+        let config = Config::parse_mem(
+            r#"
+            magnifier {
+                binds {
+                    Mod+H { move-magnifier-left; }
+                    Mod+J allow-inhibiting=false { move-magnifier-down; }
+                    Mod+K repeat=false { move-magnifier-up; }
+                    Escape { toggle-magnifier; }
+                    Mod+Escape repeat=false { toggle-magnifier; }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let binds = &config.magnifier.binds;
+        let actions: Vec<_> = binds.iter().map(|bind| bind.action.clone()).collect();
+        assert_eq!(
+            actions,
+            [
+                Action::MoveMagnifierLeft,
+                Action::MoveMagnifierDown,
+                Action::MoveMagnifierUp,
+                Action::ToggleMagnifier,
+                Action::ToggleMagnifier,
+            ]
+        );
+        assert!(binds[0].repeat);
+        assert!(!binds[1].allow_inhibiting);
+        assert!(!binds[2].repeat);
+        // Repeating a toggle would turn the magnifier back on, so it doesn't repeat by default.
+        assert!(!binds[3].repeat);
+        assert!(!binds[4].repeat);
+    }
+
+    #[test]
+    fn magnifier_binds_reject_other_actions_and_keys() {
+        let valid = "magnifier { binds { Mod+H { move-magnifier-left; }; }; }";
+        assert!(Config::parse_mem(valid).is_ok());
+
+        for text in [
+            "magnifier { binds { Mod+H { focus-column-left; }; }; }",
+            "magnifier { binds { Mod+WheelScrollUp { move-magnifier-up; }; }; }",
+            "magnifier { binds { Mod+H { move-magnifier-left; }; Mod+H { toggle-magnifier; }; }; }",
+            "magnifier { binds { Mod+H cooldown-ms=100 { move-magnifier-left; }; }; }",
+        ] {
+            assert!(Config::parse_mem(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
     fn screen_cast_picker_animation_parses() {
         let config = Config::parse_mem(
             r#"
@@ -2022,6 +2083,8 @@ mod tests {
                 zoom_factor: 2.0,
                 track_cursor: true,
                 scale_cursor: true,
+                move_step: 0.05,
+                binds: [],
             },
             environment: Environment(
                 [
@@ -2810,6 +2873,7 @@ mod tests {
         // will not have any binds. Clear them out so they don't spam the diff.
         default_config.window_rules.clear();
         default_config.binds.0.clear();
+        default_config.magnifier.binds.clear();
 
         assert_snapshot!(
             diff_lines(
@@ -2840,6 +2904,9 @@ mod tests {
 
         -                0.6666666666666666,
         +                0.66667,
+
+        -        track_cursor: true,
+        +        track_cursor: false,
         "#,
         );
     }
