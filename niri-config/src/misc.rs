@@ -604,7 +604,6 @@ pub struct GridOverview {
     pub min_scale: f64,
     pub focused_column_scale: f64,
     pub grid_all_monitors: bool,
-    pub default_mod_action: bool,
     pub minimized_highlight: GridMinimizedHighlight,
 }
 
@@ -696,7 +695,6 @@ impl Default for GridOverview {
             min_scale: 0.08,
             focused_column_scale: 1.04,
             grid_all_monitors: true,
-            default_mod_action: true,
             minimized_highlight: GridMinimizedHighlight::default(),
         }
     }
@@ -833,8 +831,6 @@ pub struct GridOverviewPart {
     pub focused_column_scale: Option<FloatOrInt<1, 2>>,
     #[knuffel(child, unwrap(argument))]
     pub grid_all_monitors: Option<bool>,
-    #[knuffel(child, unwrap(argument))]
-    pub default_mod_action: Option<bool>,
     #[knuffel(child)]
     pub minimized_highlight: Option<GridMinimizedHighlightPart>,
 }
@@ -855,9 +851,6 @@ impl MergeWith<GridOverviewPart> for GridOverview {
         }
         if let Some(grid_all_monitors) = part.grid_all_monitors {
             self.grid_all_monitors = grid_all_monitors;
-        }
-        if let Some(default_mod_action) = part.default_mod_action {
-            self.default_mod_action = default_mod_action;
         }
         merge!((self, part), minimized_highlight);
     }

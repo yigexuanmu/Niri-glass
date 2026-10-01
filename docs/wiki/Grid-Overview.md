@@ -3,7 +3,7 @@
 The Grid Overview is a grid-based view of your windows.
 It shows every window as a tile in a grid, letting you quickly navigate between them.
 
-Open it with the `toggle-grid-overview` bind, or by tapping the `Mod` key (pressing and releasing it without pressing any other key in between). The `Mod` key tap behavior is built in and works even without an explicit binding, controlled by the `default-mod-action` setting (enabled by default).
+Open it with the `toggle-grid-overview` bind. The default configuration binds tapping the `Mod` key (pressing and releasing it without pressing any other key in between) to it; since this is an ordinary binding, you can rebind or remove it in `binds`.
 
 While in the grid overview, all keyboard shortcuts keep working.
 Use the arrow keys to navigate between windows.

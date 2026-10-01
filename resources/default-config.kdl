@@ -370,11 +370,6 @@ grid-overview {
     // Scale the focused column relative to its cell. Ranges from 1 to 2.
     focused-column-scale 1.04
 
-    // When true (the default), tapping the Mod key alone (press and release without
-    // pressing any other key) toggles the grid overview, even without an explicit binding.
-    // Set to false to disable this built-in behavior.
-    // default-mod-action false
-
     // Frame drawn around the cells of minimized windows, so you can tell them apart from
     // the normal ones. Same knobs as the recent-windows highlight.
     // Uncomment "off" to remove it.
